@@ -1,0 +1,63 @@
+version: "3.8"
+
+services:
+  app:
+    build: .
+    container_name: live-commerce-bi
+    ports:
+      - "8080:8080"
+    environment:
+      - CONFIG_PATH=config/config.yaml
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - bi-network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: bi-postgres
+    environment:
+      POSTGRES_USER: biuser
+      POSTGRES_PASSWORD: bipass2024
+      POSTGRES_DB: live_commerce_bi
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U biuser -d live_commerce_bi"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - bi-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: bi-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - bi-network
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  bi-network:
+    driver: bridge

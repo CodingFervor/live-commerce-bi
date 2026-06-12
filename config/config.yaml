@@ -1,0 +1,27 @@
+server:
+  port: 8080
+  mode: release
+
+database:
+  host: postgres
+  port: 5432
+  user: biuser
+  password: bipass2024
+  dbname: live_commerce_bi
+  sslmode: disable
+  max_open_conns: 50
+  max_idle_conns: 10
+
+redis:
+  host: redis
+  port: 6379
+  password: ""
+  db: 0
+
+jwt:
+  secret: "live-commerce-bi-jwt-secret-2024"
+  expire_hours: 24
+
+log:
+  level: info
+  format: json
