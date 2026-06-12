@@ -1,7 +1,10 @@
 {
   "server": {
     "port": 8080,
-    "mode": "release"
+    "mode": "release",
+    "read_timeout": 30,
+    "write_timeout": 30,
+    "max_header_bytes": 1048576
   },
   "database": {
     "host": "postgres",
@@ -11,20 +14,32 @@
     "dbname": "live_commerce_bi",
     "sslmode": "disable",
     "max_open_conns": 50,
-    "max_idle_conns": 10
+    "max_idle_conns": 10,
+    "conn_max_lifetime": 3600
   },
   "redis": {
     "host": "redis",
     "port": 6379,
     "password": "",
-    "db": 0
+    "db": 0,
+    "pool_size": 20
   },
   "jwt": {
     "secret": "live-commerce-bi-jwt-secret-2024",
-    "expire_hours": 24
+    "expire_hours": 24,
+    "issuer": "live-commerce-bi"
   },
   "log": {
     "level": "info",
     "format": "json"
+  },
+  "kafka": {
+    "brokers": ["kafka:9092"],
+    "group_id": "live-bi-consumer",
+    "enabled": false
+  },
+  "alert": {
+    "evaluate_interval": 60,
+    "enabled": true
   }
 }

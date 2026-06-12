@@ -106,28 +106,20 @@ func (r *AnalyticsRepo) GetConversionFunnel(ctx context.Context, liveRoomID int6
 	if err != nil {
 		// Return synthetic funnel
 		return []model.ConversionAnalysis{
-			Stage: "曝光", Count: 10000, Rate: 1.0, DropOff: 0,
-		}, {
-			Stage: "点击", Count: 3000, Rate: 0.3, DropOff: 0.7,
-		}, {
-			Stage: "加购", Count: 800, Rate: 0.08, DropOff: 0.733,
-		}, {
-			Stage: "下单", Count: 350, Rate: 0.035, DropOff: 0.562,
-		}, {
-			Stage: "支付", Count: 300, Rate: 0.03, DropOff: 0.143,
-		}}, nil
+			{Stage: "曝光", Count: 10000, Rate: 1.0, DropOff: 0},
+			{Stage: "点击", Count: 3000, Rate: 0.3, DropOff: 0.7},
+			{Stage: "加购", Count: 800, Rate: 0.08, DropOff: 0.733},
+			{Stage: "下单", Count: 350, Rate: 0.035, DropOff: 0.562},
+			{Stage: "支付", Count: 300, Rate: 0.03, DropOff: 0.143},
+		}, nil
 	}
 	return []model.ConversionAnalysis{
-		Stage: "曝光", Count: cf.Impressions, Rate: 1.0, DropOff: 0,
-	}, {
-		Stage: "点击", Count: cf.Clicks, Rate: cf.ClickRate, DropOff: 1 - cf.ClickRate,
-	}, {
-		Stage: "加购", Count: cf.AddToCarts, Rate: cf.CartRate, DropOff: 1 - cf.CartRate,
-	}, {
-		Stage: "下单", Count: cf.Orders, Rate: cf.OrderRate, DropOff: 1 - cf.OrderRate,
-	}, {
-		Stage: "支付", Count: cf.Payments, Rate: cf.PaymentRate, DropOff: 1 - cf.PaymentRate,
-	}}, nil
+		{Stage: "曝光", Count: cf.Impressions, Rate: 1.0, DropOff: 0},
+		{Stage: "点击", Count: cf.Clicks, Rate: cf.ClickRate, DropOff: 1 - cf.ClickRate},
+		{Stage: "加购", Count: cf.AddToCarts, Rate: cf.CartRate, DropOff: 1 - cf.CartRate},
+		{Stage: "下单", Count: cf.Orders, Rate: cf.OrderRate, DropOff: 1 - cf.OrderRate},
+		{Stage: "支付", Count: cf.Payments, Rate: cf.PaymentRate, DropOff: 1 - cf.PaymentRate},
+	}, nil
 }
 
 func (r *AnalyticsRepo) GetPlatformComparison(ctx context.Context, startDate, endDate string) ([]model.PlatformComparison, error) {

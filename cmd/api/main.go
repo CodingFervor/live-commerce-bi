@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -20,10 +21,11 @@ import (
 	"github.com/CodingFervor/live-commerce-bi/internal/service"
 	"github.com/CodingFervor/live-commerce-bi/pkg/jwt"
 	"github.com/CodingFervor/live-commerce-bi/pkg/logger"
+	"github.com/CodingFervor/live-commerce-bi/pkg/response"
 )
 
 func main() {
-	// Load config
+	// ─── Configuration ───
 	cfgPath := "config/config.json"
 	if envPath := os.Getenv("CONFIG_PATH"); envPath != "" {
 		cfgPath = envPath
@@ -33,142 +35,145 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Init logger
+	// ─── Logger ───
 	logger.Init(cfg.Log.Level)
-	logger.Info("Starting Live Commerce BI Server...")
+	logger.Info("Starting Live Commerce BI Server v2.1...")
 
-	// Init JWT
+	// ─── JWT ───
+	if cfg.JWT.Secret == "" {
+		log.Fatal("JWT secret is required (set jwt.secret in config or JWT_SECRET env var)")
+	}
 	jwt.SetSecret(cfg.JWT.Secret)
 
-	// Init Database
+	// ─── Database ───
 	if err := database.Init(&cfg.Database); err != nil {
 		log.Fatalf("Failed to init database: %v", err)
 	}
 	defer database.Close()
 
-	// Init Redis
+	// ─── Redis ───
 	if err := cache.Init(&cfg.Redis); err != nil {
 		log.Fatalf("Failed to init redis: %v", err)
 	}
 	defer cache.Close()
 
-	// Set Gin mode
+	// ─── Gin Mode ───
 	if cfg.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	// Start WebSocket Hub
+	// ─── Background Services ───
+	ctx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+
+	// WebSocket Hub
 	hub := service.NewHub()
 	go hub.Run()
 	logger.Info("WebSocket Hub started")
 
-	// Start Redis subscriber for real-time push
-	go service.RedisSubscriber(context.Background())
+	// Redis Pub/Sub subscriber
+	go service.RedisSubscriber(ctx)
 
-	// Start metrics aggregation scheduler
+	// Metrics aggregation scheduler (every 5 minutes)
 	go func() {
 		agg := service.NewMetricsAggregator()
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
-		for range ticker.C {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			now := time.Now()
-			_ = agg.AggregateHourly(ctx, "", now.Add(-time.Hour))
-			_ = agg.AggregateDaily(ctx, "", now.Add(-24*time.Hour))
-			_ = agg.WarmupCache(ctx)
-			cancel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				aggCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				now := time.Now()
+				_ = agg.AggregateHourly(aggCtx, "", now.Add(-time.Hour))
+				_ = agg.AggregateDaily(aggCtx, "", now.Add(-24*time.Hour))
+				_ = agg.WarmupCache(aggCtx)
+				cancel()
+			}
 		}
 	}()
 
-	// Create router
+	// Intelligent Alert Engine
+	if cfg.Alert.Enabled {
+		alertEngine := service.NewAlertEngine()
+		interval := time.Duration(cfg.Alert.EvaluateInterval) * time.Second
+		go alertEngine.StartAlertScheduler(ctx, interval)
+		logger.Info("Alert engine started (interval: %ds)", cfg.Alert.EvaluateInterval)
+	}
+
+	// Kafka event pipeline (optional)
+	if cfg.Kafka.Enabled && len(cfg.Kafka.Brokers) > 0 {
+		kafkaSvc := service.NewKafkaEventService(cfg.Kafka.Brokers, cfg.Kafka.GroupID)
+		kafkaSvc.StartConsumers(ctx)
+		defer kafkaSvc.Close()
+		logger.Info("Kafka event pipeline started (brokers: %v)", cfg.Kafka.Brokers)
+	}
+
+	// Schedule dispatcher
+	scheduler := service.NewScheduleDispatcher()
+	go scheduler.Start(ctx)
+
+	// Cache warmup on startup
+	go func() {
+		time.Sleep(5 * time.Second) // wait for services to stabilize
+		qc := service.NewQueryCache()
+		if err := qc.Warmup(ctx); err != nil {
+			logger.Warn("Cache warmup failed: %v", err)
+		}
+	}()
+
+	// ─── Router Setup ───
 	r := gin.New()
-	r.Use(gin.Recovery())
+	r.Use(response.RecoveryHandler())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 	r.Use(middleware.CORS())
 	r.Use(middleware.RateLimit(200, time.Minute))
 
-	// Health check with dependency status
-	r.GET("/health", func(c *gin.Context) {
-		status := "ok"
-		dbStatus := "up"
-		redisStatus := "up"
+	// ─── System Endpoints ───
+	r.GET("/health", healthCheck(hub))
+	r.GET("/metrics", systemMetrics(hub))
+	r.GET("/info", systemInfo())
 
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
-		defer cancel()
-
-		if err := database.Get().Ping(ctx); err != nil {
-			dbStatus = "down"
-			status = "degraded"
-		}
-		if err := cache.Get().Ping(ctx).Err(); err != nil {
-			redisStatus = "down"
-			status = "degraded"
-		}
-
-		code := http.StatusOK
-		if status == "degraded" {
-			code = http.StatusServiceUnavailable
-		}
-		c.JSON(code, gin.H{
-			"status":    status,
-			"service":   "live-commerce-bi",
-			"version":   "2.0.0",
-			"db":        dbStatus,
-			"redis":     redisStatus,
-			"ws_clients": hub.ClientCount(),
-			"timestamp": time.Now().Unix(),
-		})
-	})
-
-	r.GET("/metrics", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"ws_clients":  hub.ClientCount(),
-			"ws_rooms":    hub.RoomCount(),
-			"goroutines":  "N/A",
-		})
-	})
-
-	// API v1 group
+	// ─── API v1 ───
 	v1 := r.Group("/api/v1")
 
-	// ─── Auth (public) ───
+	// Public: Auth
 	authHandler := handler.NewAuthHandler()
-	auth := v1.Group("/auth")
 	{
-		auth.POST("/login", authHandler.Login)
-		auth.POST("/register", authHandler.Register)
+		v1.POST("/auth/login", authHandler.Login)
+		v1.POST("/auth/register", authHandler.Register)
 	}
 
-	// ─── Protected routes ───
+	// Protected routes
 	protected := v1.Group("")
 	protected.Use(middleware.AuthRequired())
+	protected.Use(middleware.DataPermission())
 	protected.Use(middleware.AuditLogger())
 	{
-		// Auth profile
 		protected.GET("/auth/profile", authHandler.GetProfile)
 
 		// ─── Dashboard ───
 		dashHandler := handler.NewDashboardHandler()
-		dashboard := protected.Group("/dashboard")
 		{
-			dashboard.GET("/overview", dashHandler.Overview)
-			dashboard.GET("/realtime", dashHandler.Realtime)
-			dashboard.GET("/trend", dashHandler.Trend)
+			protected.GET("/dashboard/overview", dashHandler.Overview)
+			protected.GET("/dashboard/realtime", dashHandler.Realtime)
+			protected.GET("/dashboard/trend", dashHandler.Trend)
 		}
 
-		// Custom dashboards
-		dashboards := protected.Group("/dashboards")
+		// Custom Dashboards
 		{
-			dashboards.POST("", dashHandler.CreateDashboard)
-			dashboards.GET("", dashHandler.ListDashboards)
-			dashboards.GET("/:id", dashHandler.GetDashboard)
-			dashboards.PUT("/:id", dashHandler.UpdateDashboard)
-			dashboards.DELETE("/:id", dashHandler.DeleteDashboard)
-			dashboards.POST("/:id/widgets", dashHandler.CreateWidget)
-			dashboards.GET("/:id/widgets", dashHandler.ListWidgets)
-			dashboards.PUT("/:id/widgets/:wid", dashHandler.UpdateWidget)
-			dashboards.DELETE("/:id/widgets/:wid", dashHandler.DeleteWidget)
+			protected.POST("/dashboards", dashHandler.CreateDashboard)
+			protected.GET("/dashboards", dashHandler.ListDashboards)
+			protected.GET("/dashboards/:id", dashHandler.GetDashboard)
+			protected.PUT("/dashboards/:id", dashHandler.UpdateDashboard)
+			protected.DELETE("/dashboards/:id", dashHandler.DeleteDashboard)
+			protected.POST("/dashboards/:id/widgets", dashHandler.CreateWidget)
+			protected.GET("/dashboards/:id/widgets", dashHandler.ListWidgets)
+			protected.PUT("/dashboards/:id/widgets/:wid", dashHandler.UpdateWidget)
+			protected.DELETE("/dashboards/:id/widgets/:wid", dashHandler.DeleteWidget)
+			protected.POST("/dashboards/:id/share", dashHandler.CreateDashboard)
 		}
 
 		// ─── Data Sources ───
@@ -187,100 +192,87 @@ func main() {
 
 		// ─── Live Rooms ───
 		lrHandler := handler.NewLiveRoomHandler()
-		liveRooms := protected.Group("/live-rooms")
 		{
-			liveRooms.POST("", lrHandler.Create)
-			liveRooms.GET("", lrHandler.List)
-			liveRooms.GET("/:id", lrHandler.Get)
-			liveRooms.GET("/:id/metrics", lrHandler.GetMetrics)
-			liveRooms.GET("/:id/products", lrHandler.GetProducts)
-			liveRooms.GET("/:id/funnel", lrHandler.GetFunnel)
+			protected.POST("/live-rooms", lrHandler.Create)
+			protected.GET("/live-rooms", lrHandler.List)
+			protected.GET("/live-rooms/:id", lrHandler.Get)
+			protected.GET("/live-rooms/:id/metrics", lrHandler.GetMetrics)
+			protected.GET("/live-rooms/:id/products", lrHandler.GetProducts)
+			protected.GET("/live-rooms/:id/funnel", lrHandler.GetFunnel)
 		}
 
 		// ─── Streamers ───
 		sHandler := handler.NewStreamerHandler()
-		streamers := protected.Group("/streamers")
 		{
-			streamers.POST("", sHandler.Create)
-			streamers.GET("", sHandler.List)
-			streamers.GET("/:id", sHandler.Get)
-			streamers.PUT("/:id", sHandler.Update)
-			streamers.GET("/:id/performance", sHandler.Performance)
-			streamers.GET("/rankings", sHandler.Rankings)
+			protected.POST("/streamers", sHandler.Create)
+			protected.GET("/streamers", sHandler.List)
+			protected.GET("/streamers/:id", sHandler.Get)
+			protected.PUT("/streamers/:id", sHandler.Update)
+			protected.GET("/streamers/:id/performance", sHandler.Performance)
+			protected.GET("/streamers/rankings", sHandler.Rankings)
 		}
 
 		// ─── Products ───
 		pHandler := handler.NewProductHandler()
-		products := protected.Group("/products")
 		{
-			products.POST("", pHandler.Create)
-			products.GET("", pHandler.List)
-			products.GET("/:id", pHandler.Get)
-			products.PUT("/:id", pHandler.Update)
-			products.GET("/rankings", pHandler.Rankings)
+			protected.POST("/products", pHandler.Create)
+			protected.GET("/products", pHandler.List)
+			protected.GET("/products/:id", pHandler.Get)
+			protected.PUT("/products/:id", pHandler.Update)
+			protected.GET("/products/rankings", pHandler.Rankings)
 		}
 
 		// ─── Orders ───
 		oHandler := handler.NewOrderHandler()
-		orders := protected.Group("/orders")
 		{
-			orders.GET("", oHandler.List)
-			orders.GET("/:id", oHandler.Get)
-			orders.GET("/stats", oHandler.Stats)
-			orders.GET("/revenue", oHandler.Revenue)
+			protected.GET("/orders", oHandler.List)
+			protected.GET("/orders/:id", oHandler.Get)
+			protected.GET("/orders/stats", oHandler.Stats)
+			protected.GET("/orders/revenue", oHandler.Revenue)
 		}
 
 		// ─── Analytics ───
 		aHandler := handler.NewAnalyticsHandler()
-		analytics := protected.Group("/analytics")
 		{
-			analytics.GET("/gmv", aHandler.GMV)
-			analytics.GET("/conversion", aHandler.Conversion)
-			analytics.GET("/platform-comparison", aHandler.PlatformComparison)
-			analytics.GET("/category-analysis", aHandler.CategoryAnalysis)
-			analytics.GET("/time-analysis", aHandler.TimeAnalysis)
-			analytics.GET("/funnel-analysis", aHandler.FunnelAnalysis)
-		}
-
-		// ─── Viewers ───
-		viewers := protected.Group("/viewers")
-		{
-			viewers.GET("/realtime", aHandler.ViewerRealtime)
-			viewers.GET("/demographics", aHandler.ViewerDemographics)
-			viewers.GET("/engagement", aHandler.ViewerEngagement)
-			viewers.GET("/retention", aHandler.ViewerRetention)
+			protected.GET("/analytics/gmv", aHandler.GMV)
+			protected.GET("/analytics/conversion", aHandler.Conversion)
+			protected.GET("/analytics/platform-comparison", aHandler.PlatformComparison)
+			protected.GET("/analytics/category-analysis", aHandler.CategoryAnalysis)
+			protected.GET("/analytics/time-analysis", aHandler.TimeAnalysis)
+			protected.GET("/analytics/funnel-analysis", aHandler.FunnelAnalysis)
+			protected.GET("/viewers/realtime", aHandler.ViewerRealtime)
+			protected.GET("/viewers/demographics", aHandler.ViewerDemographics)
+			protected.GET("/viewers/engagement", aHandler.ViewerEngagement)
+			protected.GET("/viewers/retention", aHandler.ViewerRetention)
 		}
 
 		// ─── Reports ───
 		rHandler := handler.NewReportHandler()
-		reports := protected.Group("/reports")
 		{
-			reports.POST("", rHandler.Create)
-			reports.GET("", rHandler.List)
-			reports.GET("/:id", rHandler.Get)
-			reports.PUT("/:id", rHandler.Update)
-			reports.DELETE("/:id", rHandler.Delete)
-			reports.POST("/:id/generate", rHandler.Generate)
-			reports.GET("/:id/download", rHandler.Download)
-		}
-
-		reportTemplates := protected.Group("/report-templates")
-		{
-			reportTemplates.GET("", rHandler.ListTemplates)
-			reportTemplates.POST("", rHandler.CreateTemplate)
+			protected.POST("/reports", rHandler.Create)
+			protected.GET("/reports", rHandler.List)
+			protected.GET("/reports/:id", rHandler.Get)
+			protected.PUT("/reports/:id", rHandler.Update)
+			protected.DELETE("/reports/:id", rHandler.Delete)
+			protected.POST("/reports/:id/generate", rHandler.Generate)
+			protected.GET("/reports/:id/download", rHandler.Download)
+			protected.GET("/report-templates", rHandler.ListTemplates)
+			protected.POST("/report-templates", rHandler.CreateTemplate)
 		}
 
 		// ─── Alerts ───
 		alHandler := handler.NewAlertHandler()
-		alerts := protected.Group("/alerts")
+		aeHandler := handler.NewAlertEngineHandler()
 		{
-			alerts.POST("", alHandler.CreateRule)
-			alerts.GET("", alHandler.ListRules)
-			alerts.GET("/:id", alHandler.GetRule)
-			alerts.PUT("/:id", alHandler.UpdateRule)
-			alerts.DELETE("/:id", alHandler.DeleteRule)
-			alerts.GET("/:id/history", alHandler.GetHistory)
-			alerts.POST("/:id/test", alHandler.TestAlert)
+			protected.POST("/alerts", alHandler.CreateRule)
+			protected.GET("/alerts", alHandler.ListRules)
+			protected.GET("/alerts/:id", alHandler.GetRule)
+			protected.PUT("/alerts/:id", alHandler.UpdateRule)
+			protected.DELETE("/alerts/:id", alHandler.DeleteRule)
+			protected.GET("/alerts/:id/history", alHandler.GetHistory)
+			protected.POST("/alerts/:id/test", alHandler.TestAlert)
+			protected.POST("/alerts/evaluate", aeHandler.EvaluateAll)
+			protected.POST("/alerts/:id/evaluate", aeHandler.EvaluateRule)
 		}
 
 		// ─── Organizations (Admin) ───
@@ -313,37 +305,34 @@ func main() {
 
 		// ─── Audit Logs ───
 		auditHandler := handler.NewAuditHandler()
-		auditLogs := protected.Group("/audit-logs")
 		{
-			auditLogs.GET("", auditHandler.ListAuditLogs)
-			auditLogs.GET("/stats", auditHandler.GetAuditStats)
+			protected.GET("/audit-logs", auditHandler.ListAuditLogs)
+			protected.GET("/audit-logs/stats", auditHandler.GetAuditStats)
 		}
 
 		// ─── Data Export ───
 		exportHandler := handler.NewExportHandler()
-		exports := protected.Group("/exports")
 		{
-			exports.POST("", exportHandler.CreateExport)
-			exports.GET("", exportHandler.ListExports)
-			exports.GET("/:id", exportHandler.GetExportStatus)
-			exports.GET("/:id/download", exportHandler.DownloadExport)
-			exports.POST("/:id/cancel", exportHandler.CancelExport)
+			protected.POST("/exports", exportHandler.CreateExport)
+			protected.GET("/exports", exportHandler.ListExports)
+			protected.GET("/exports/:id", exportHandler.GetExportStatus)
+			protected.GET("/exports/:id/download", exportHandler.DownloadExport)
+			protected.POST("/exports/:id/cancel", exportHandler.CancelExport)
 		}
 
 		// ─── Advanced Analytics ───
 		advHandler := handler.NewAdvancedAnalyticsHandler()
-		advanced := protected.Group("/advanced-analytics")
 		{
-			advanced.GET("/cohort", advHandler.CohortAnalysis)
-			advanced.GET("/rfm", advHandler.RFMAnalysis)
-			advanced.GET("/forecast", advHandler.SalesForecast)
-			advanced.GET("/anomaly", advHandler.AnomalyDetection)
-			advanced.GET("/user-path", advHandler.UserPathAnalysis)
-			advanced.GET("/engagement-heatmap", advHandler.EngagementHeatmap)
-			advanced.POST("/olap", advHandler.OLAPQuery)
-			advanced.GET("/drill-down", advHandler.DrillDown)
-			advanced.GET("/period-comparison", advHandler.PeriodComparison)
-			advanced.GET("/target-comparison", advHandler.TargetComparison)
+			protected.GET("/advanced-analytics/cohort", advHandler.CohortAnalysis)
+			protected.GET("/advanced-analytics/rfm", advHandler.RFMAnalysis)
+			protected.GET("/advanced-analytics/forecast", advHandler.SalesForecast)
+			protected.GET("/advanced-analytics/anomaly", advHandler.AnomalyDetection)
+			protected.GET("/advanced-analytics/user-path", advHandler.UserPathAnalysis)
+			protected.GET("/advanced-analytics/engagement-heatmap", advHandler.EngagementHeatmap)
+			protected.POST("/advanced-analytics/olap", advHandler.OLAPQuery)
+			protected.GET("/advanced-analytics/drill-down", advHandler.DrillDown)
+			protected.GET("/advanced-analytics/period-comparison", advHandler.PeriodComparison)
+			protected.GET("/advanced-analytics/target-comparison", advHandler.TargetComparison)
 		}
 
 		// ─── Data Quality ───
@@ -357,7 +346,7 @@ func main() {
 			quality.GET("/rules/:id/results", dqHandler.GetResults)
 		}
 
-		// ─── Event Tracking (Public-facing, no auth for SDK) ───
+		// ─── Event Tracking ───
 		evtHandler := handler.NewEventHandler()
 		{
 			v1.POST("/events/track", evtHandler.Track)
@@ -368,21 +357,23 @@ func main() {
 
 		// ─── Aggregated Metrics ───
 		metricsHandler := handler.NewMetricsAggHandler()
-		metricsAgg := protected.Group("/metrics")
 		{
-			metricsAgg.GET("/hourly", metricsHandler.GetHourlyMetrics)
-			metricsAgg.GET("/daily", metricsHandler.GetDailyMetrics)
-			metricsAgg.GET("/streamer/:id/daily", metricsHandler.GetStreamerDaily)
+			protected.GET("/metrics/hourly", metricsHandler.GetHourlyMetrics)
+			protected.GET("/metrics/daily", metricsHandler.GetDailyMetrics)
+			protected.GET("/metrics/streamer/:id/daily", metricsHandler.GetStreamerDaily)
 		}
 
-		// ─── Dashboard Sharing ───
-		shares := protected.Group("/dashboards")
+		// ─── Data Screen (Big Screen Display) ───
+		screenHandler := handler.NewDataScreenHandler()
 		{
-			shares.POST("/:id/share", dashHandler.CreateDashboard) // reuse existing
+			protected.GET("/screen/overview", screenHandler.Overview)
+			protected.GET("/screen/realtime", screenHandler.Realtime)
+			protected.GET("/screen/rankings", screenHandler.Rankings)
+			protected.GET("/screen/geographic", screenHandler.Geographic)
 		}
 	}
 
-	// ─── WebSocket (public endpoint, auth via query param) ───
+	// ─── WebSocket ───
 	wsHandler := handler.NewWebSocketHandler()
 	r.GET("/ws", wsHandler.ServeWS)
 	r.GET("/ws/stats", wsHandler.WSStats)
@@ -393,28 +384,92 @@ func main() {
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      r,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		ReadTimeout:  time.Duration(cfg.Server.ReadTimeout) * time.Second,
+		WriteTimeout: time.Duration(cfg.Server.WriteTimeout) * time.Second,
 		IdleTimeout:  120 * time.Second,
+		MaxHeaderBytes: cfg.Server.MaxHeaderBytes,
 	}
 
-	// Graceful shutdown
 	go func() {
-		logger.Info("Server listening on %s", addr)
+		logger.Info("Server listening on %s (mode=%s)", addr, cfg.Server.Mode)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
 		}
 	}()
 
+	// ─── Graceful Shutdown ───
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	logger.Info("Shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
+
+	// Stop background services
+	bgCancel()
+	scheduler.Stop()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Fatalf("Server forced shutdown: %v", err)
 	}
 	logger.Info("Server exited gracefully")
+}
+
+// ─── Endpoint Handlers ───
+
+func healthCheck(hub *service.Hub) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		status := "ok"
+		dbStatus := "up"
+		redisStatus := "up"
+
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		defer cancel()
+
+		if err := database.Get().Ping(ctx); err != nil {
+			dbStatus = "down"
+			status = "degraded"
+		}
+		if err := cache.Get().Ping(ctx).Err(); err != nil {
+			redisStatus = "down"
+			status = "degraded"
+		}
+
+		code := http.StatusOK
+		if status == "degraded" {
+			code = http.StatusServiceUnavailable
+		}
+		c.JSON(code, gin.H{
+			"status":     status,
+			"service":    "live-commerce-bi",
+			"version":    "2.1.0",
+			"db":         dbStatus,
+			"redis":      redisStatus,
+			"ws_clients": hub.ClientCount(),
+			"timestamp":  time.Now().Unix(),
+		})
+	}
+}
+
+func systemMetrics(hub *service.Hub) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"ws_clients":  hub.ClientCount(),
+			"ws_rooms":    hub.RoomCount(),
+			"goroutines":  runtime.NumGoroutine(),
+		})
+	}
+}
+
+func systemInfo() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"name":       "Live Commerce BI",
+			"version":    "2.1.0",
+			"go_version": runtime.Version(),
+			"platform":   runtime.GOOS + "/" + runtime.GOARCH,
+			"num_cpu":    runtime.NumCPU(),
+		})
+	}
 }
