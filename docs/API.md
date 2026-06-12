@@ -354,6 +354,71 @@ Response:
 
 ---
 
+## AI Integration *(Auth Required)*
+
+### AI Configuration
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/ai/configs` | Create AI provider config |
+| GET | `/ai/configs` | List AI configs |
+| GET | `/ai/configs/:id` | Get AI config |
+| PUT | `/ai/configs/:id` | Update AI config |
+| DELETE | `/ai/configs/:id` | Delete AI config |
+| POST | `/ai/configs/:id/test` | Test AI connection |
+
+### AI Features
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/ai/chat` | AI chat (smart query) |
+| POST | `/ai/insights` | Generate data insights |
+| POST | `/ai/report` | Generate analytical report |
+| GET | `/ai/conversations` | List chat conversations |
+| GET | `/ai/conversations/:id` | Get conversation history |
+
+### Create AI Config Body
+```json
+{
+  "name": "DeepSeek Chat",
+  "provider": "deepseek",
+  "api_key": "sk-xxx",
+  "api_endpoint": "",
+  "model_name": "deepseek-chat",
+  "max_tokens": 4096,
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "is_default": true,
+  "is_enabled": true,
+  "proxy_url": ""
+}
+```
+
+**Supported Providers**: `openai`, `qwen`, `zhipu`, `baidu`, `deepseek`, `moonshot`, `spark`, `ollama`
+
+### AI Chat Request
+```json
+{
+  "config_id": 1,
+  "messages": [
+    {"role": "user", "content": "分析上周GMV下降原因"}
+  ]
+}
+```
+
+---
+
+## System Settings *(Admin Only)*
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/system/settings` | Get all system settings |
+| PUT | `/system/settings` | Update system settings |
+| GET | `/system/settings/:key` | Get setting by key |
+| PUT | `/system/settings/:key` | Update single setting |
+
+---
+
 ## Architecture
 
 ```
