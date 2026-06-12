@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	""+MOD+"/internal/config"
+	"github.com/CodingFervor/live-commerce-bi/internal/config"
 )
 
 var pool *pgxpool.Pool

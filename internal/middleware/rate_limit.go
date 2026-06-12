@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	""+MOD+"/pkg/response"
+	"github.com/CodingFervor/live-commerce-bi/pkg/response"
 
 	"github.com/gin-gonic/gin"
 )

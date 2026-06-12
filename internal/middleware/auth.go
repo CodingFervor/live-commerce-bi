@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
-	""+MOD+"/pkg/jwt"
-	""+MOD+"/pkg/response"
+	"github.com/CodingFervor/live-commerce-bi/pkg/jwt"
+	"github.com/CodingFervor/live-commerce-bi/pkg/response"
 
 	"github.com/gin-gonic/gin"
 )

@@ -20,8 +20,8 @@ type Hub struct {
 	clients    map[*Client]bool
 	rooms      map[string]map[*Client]bool
 	broadcast  chan []byte
-	register   chan *Client
-	unregister chan *Client
+	Register   chan *Client
+	Unregister chan *Client
 	mu         sync.RWMutex
 }
 
@@ -32,8 +32,8 @@ func NewHub() *Hub {
 		clients:    make(map[*Client]bool),
 		rooms:      make(map[string]map[*Client]bool),
 		broadcast:  make(chan []byte, 256),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
+		Register:   make(chan *Client),
+		Unregister: make(chan *Client),
 	}
 	defaultHub = h
 	return h
@@ -49,7 +49,7 @@ func GetHub() *Hub {
 func (h *Hub) Run() {
 	for {
 		select {
-		case client := <-h.register:
+		case client := <-h.Register:
 			h.mu.Lock()
 			h.clients[client] = true
 			if client.RoomID != "" {
@@ -60,7 +60,7 @@ func (h *Hub) Run() {
 			}
 			h.mu.Unlock()
 
-		case client := <-h.unregister:
+		case client := <-h.Unregister:
 			h.mu.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
@@ -142,7 +142,6 @@ func RedisSubscriber(ctx context.Context) {
 			case "live:metrics:update":
 				hub.BroadcastToAll([]byte(msg.Payload))
 			case "live:room:alert", "live:room:gmv":
-				// Extract roomID from payload for room-specific broadcast
 				hub.BroadcastToAll([]byte(msg.Payload))
 			}
 		}
@@ -155,9 +154,7 @@ func PushRealtimeMetric(ctx context.Context, channel string, data []byte) error 
 	if rdb == nil {
 		return nil
 	}
-	// Cache latest value
 	cacheKey := "realtime:" + channel
 	_ = cache.SetJSON(ctx, cacheKey, string(data), 5*time.Minute)
-	// Publish to subscribers
 	return rdb.Publish(ctx, channel, string(data)).Err()
 }

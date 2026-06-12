@@ -1,8 +1,7 @@
 package middleware
 
 import (
-	"bytes"
-	"io"
+	"context"
 	"time"
 
 	"github.com/CodingFervor/live-commerce-bi/internal/model"
@@ -14,17 +13,8 @@ import (
 
 // AuditLogger records all API operations to audit_logs table
 func AuditLogger() gin.HandlerFunc {
-	auditRepo := repository.NewAuditRepo()
-
 	return func(c *gin.Context) {
 		start := time.Now()
-
-		// Read request body for detail capture
-		var bodyBytes []byte
-		if c.Request.Body != nil {
-			bodyBytes, _ = io.ReadAll(c.Request.Body)
-			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		}
 
 		c.Next()
 
@@ -33,7 +23,7 @@ func AuditLogger() gin.HandlerFunc {
 		userID, _ := c.Get("user_id")
 		username, _ := c.Get("username")
 		if userID == nil {
-			return // skip unauthenticated requests
+			return
 		}
 
 		log := &model.AuditLog{
@@ -44,18 +34,43 @@ func AuditLogger() gin.HandlerFunc {
 			ResourceID: c.Param("id"),
 			IP:         c.ClientIP(),
 			UserAgent:  c.Request.UserAgent(),
+			RequestID:  c.GetString("request_id"),
 			Duration:   int(duration),
 			StatusCode: c.Writer.Status(),
 		}
 
-		// Truncate body for detail
-		if len(bodyBytes) > 500 {
-			bodyBytes = bodyBytes[:500]
-		}
-		log.Detail = string(bodyBytes)
-
+		auditRepo := repository.NewAuditRepo()
 		if err := auditRepo.Create(c.Request.Context(), log); err != nil {
 			logger.Error("Failed to write audit log: %v", err)
 		}
 	}
 }
+
+// RequestID injects a unique request ID into context
+func RequestID() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		requestID := c.GetHeader("X-Request-ID")
+		if requestID == "" {
+			requestID = generateRequestID()
+		}
+		c.Set("request_id", requestID)
+		c.Header("X-Request-ID", requestID)
+		c.Next()
+	}
+}
+
+func generateRequestID() string {
+	return time.Now().Format("20060102150405") + "-" + randomHex(8)
+}
+
+func randomHex(n int) string {
+	const hex = "0123456789abcdef"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = hex[(time.Now().UnixNano()+int64(i))%16]
+	}
+	return string(b)
+}
+
+// suppress unused import
+var _ = context.Background

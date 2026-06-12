@@ -83,6 +83,7 @@ func main() {
 	// Create router
 	r := gin.New()
 	r.Use(gin.Recovery())
+	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 	r.Use(middleware.CORS())
 	r.Use(middleware.RateLimit(200, time.Minute))
@@ -382,10 +383,10 @@ func main() {
 	}
 
 	// ─── WebSocket (public endpoint, auth via query param) ───
-	r.GET("/ws", func(c *gin.Context) {
-		// In production: validate token from query param
-		c.JSON(http.StatusOK, gin.H{"message": "WebSocket endpoint - connect via ws://"})
-	})
+	wsHandler := handler.NewWebSocketHandler()
+	r.GET("/ws", wsHandler.ServeWS)
+	r.GET("/ws/stats", wsHandler.WSStats)
+	r.GET("/ws/room/:room_id", wsHandler.SubscribeRoom)
 
 	// ─── Start Server ───
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)

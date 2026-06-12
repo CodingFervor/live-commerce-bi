@@ -3,7 +3,7 @@ package middleware
 import (
 	"time"
 
-	""+MOD+"/pkg/logger"
+	"github.com/CodingFervor/live-commerce-bi/pkg/logger"
 
 	"github.com/gin-gonic/gin"
 )

@@ -8,7 +8,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	""+MOD+"/internal/config"
+	"github.com/CodingFervor/live-commerce-bi/internal/config"
 )
 
 var client *redis.Client
