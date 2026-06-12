@@ -114,6 +114,21 @@ func main() {
 	scheduler := service.NewScheduleDispatcher()
 	go scheduler.Start(ctx)
 
+	// Compass daily reset (reset request counters at midnight)
+	compassEngine := service.NewCompassEngine()
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				compassEngine.ResetDailyCounters()
+			}
+		}
+	}()
+
 	// Cache warmup on startup
 	go func() {
 		time.Sleep(5 * time.Second) // wait for services to stabilize
@@ -423,6 +438,37 @@ func main() {
 			settingsAdmin.GET("/security", settingHandler.GetSecurityConfig)
 			settingsAdmin.POST("/security", settingHandler.UpdateSecurityConfig)
 			settingsAdmin.GET("/system-info", settingHandler.GetSystemInfo)
+		}
+
+		// ─── Douyin Compass (抖音罗盘数据采集) ───
+		compassHandler := handler.NewCompassHandler()
+		compassAdmin := protected.Group("/compass")
+		compassAdmin.Use(middleware.AdminRequired())
+		{
+			// Session management
+			compassAdmin.POST("/sessions", compassHandler.CreateSession)
+			compassAdmin.GET("/sessions", compassHandler.ListSessions)
+			compassAdmin.GET("/sessions/:id", compassHandler.GetSession)
+			compassAdmin.PUT("/sessions/:id", compassHandler.UpdateSession)
+			compassAdmin.DELETE("/sessions/:id", compassHandler.DeleteSession)
+			compassAdmin.POST("/sessions/:id/health", compassHandler.CheckSessionHealth)
+			// Task management
+			compassAdmin.POST("/tasks", compassHandler.CreateTask)
+			compassAdmin.GET("/tasks", compassHandler.ListTasks)
+			compassAdmin.GET("/tasks/:id", compassHandler.GetTask)
+			// Data fetching
+			compassAdmin.POST("/sync", compassHandler.RunSync)
+		}
+		compassData := protected.Group("/compass")
+		compassData.Use(middleware.RoleRequired("admin", "analyst"))
+		{
+			compassData.GET("/live/overview", compassHandler.FetchLiveOverview)
+			compassData.GET("/live/:room_id", compassHandler.FetchLiveDetail)
+			compassData.GET("/products", compassHandler.FetchProducts)
+			compassData.GET("/products/:product_id", compassHandler.FetchProductDetail)
+			compassData.GET("/orders", compassHandler.FetchOrders)
+			compassData.GET("/streamers/rank", compassHandler.FetchStreamerRank)
+			compassData.GET("/funnel", compassHandler.FetchFunnel)
 		}
 	}
 

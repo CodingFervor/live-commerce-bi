@@ -354,6 +354,74 @@ Response:
 
 ---
 
+## Douyin Compass (抖音罗盘数据采集) *(Admin/Analyst)*
+
+Automated data collection from Douyin e-commerce compass with human-like behavior to avoid detection.
+
+### Session Management *(Admin Only)*
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/compass/sessions` | Create cookie session |
+| GET | `/compass/sessions` | List sessions |
+| GET | `/compass/sessions/:id` | Get session |
+| PUT | `/compass/sessions/:id` | Update session |
+| DELETE | `/compass/sessions/:id` | Delete session |
+| POST | `/compass/sessions/:id/health` | Check session validity |
+
+### Task Management *(Admin Only)*
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/compass/tasks` | Create collection task |
+| GET | `/compass/tasks` | List tasks |
+| GET | `/compass/tasks/:id` | Get task status |
+| POST | `/compass/sync` | Run full sync (background) |
+
+### Data Fetching *(Admin/Analyst)*
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/compass/live/overview?session_id=&start_date=&end_date=` | Live overview |
+| GET | `/compass/live/:room_id?session_id=` | Live room detail |
+| GET | `/compass/products?session_id=&page=&category=` | Product list |
+| GET | `/compass/products/:product_id?session_id=` | Product detail |
+| GET | `/compass/orders?session_id=&start_date=&end_date=&page=` | Order list |
+| GET | `/compass/streamers/rank?session_id=&start_date=&end_date=` | Streamer rankings |
+| GET | `/compass/funnel?session_id=&start_date=&end_date=` | Funnel analysis |
+
+### Create Session Body
+```json
+{
+  "name": "My Douyin Shop",
+  "cookie": "sessionid=xxx; passport_csrf_token=xxx; ...",
+  "shop_id": "1234567890",
+  "shop_name": "我的店铺",
+  "max_daily_reqs": 300
+}
+```
+
+### Run Full Sync Body
+```json
+{
+  "session_id": 1,
+  "start_date": "2024-01-01",
+  "end_date": "2024-01-15"
+}
+```
+
+### Human-Like Behavior Features
+- Random delays between requests (1-15 seconds)
+- Variable User-Agent strings (8 browser fingerprints)
+- Natural page navigation patterns (section pauses, scrolling)
+- Daily request limit (default 300, configurable)
+- Automatic break every 15 requests (1-3 minutes)
+- Session cooldown on detection (24 hours)
+- Automatic cookie expiry detection
+- Proxy rotation support
+
+---
+
 ## AI Integration *(Auth Required)*
 
 ### AI Configuration

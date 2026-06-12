@@ -39,6 +39,8 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql
       - ./sql/advanced.sql:/docker-entrypoint-initdb.d/02-advanced.sql
+      - ./sql/ai_settings.sql:/docker-entrypoint-initdb.d/03-ai-settings.sql
+      - ./sql/compass.sql:/docker-entrypoint-initdb.d/04-compass.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U biuser -d live_commerce_bi"]
       interval: 5s
