@@ -133,8 +133,14 @@ func main() {
 
 	// ─── System Endpoints ───
 	r.GET("/health", healthCheck(hub))
-	r.GET("/metrics", systemMetrics(hub))
-	r.GET("/info", systemInfo())
+
+	// Admin-only system info endpoints
+	adminPublic := r.Group("/api/v1/system")
+	adminPublic.Use(middleware.AuthRequired(), middleware.AdminRequired())
+	{
+		adminPublic.GET("/metrics", systemMetrics(hub))
+		adminPublic.GET("/info", systemInfo())
+	}
 
 	// ─── API v1 ───
 	v1 := r.Group("/api/v1")
@@ -271,8 +277,13 @@ func main() {
 			protected.DELETE("/alerts/:id", alHandler.DeleteRule)
 			protected.GET("/alerts/:id/history", alHandler.GetHistory)
 			protected.POST("/alerts/:id/test", alHandler.TestAlert)
-			protected.POST("/alerts/evaluate", aeHandler.EvaluateAll)
-			protected.POST("/alerts/:id/evaluate", aeHandler.EvaluateRule)
+			// Alert evaluation restricted to admins
+			alertEval := protected.Group("/alerts")
+			alertEval.Use(middleware.AdminRequired())
+			{
+				alertEval.POST("/evaluate", aeHandler.EvaluateAll)
+				alertEval.POST("/:id/evaluate", aeHandler.EvaluateRule)
+			}
 		}
 
 		// ─── Organizations (Admin) ───
@@ -303,11 +314,13 @@ func main() {
 			rbac.GET("/me/permissions", rbacHandler.GetCurrentUserPermissions)
 		}
 
-		// ─── Audit Logs ───
+		// ─── Audit Logs (Admin) ───
 		auditHandler := handler.NewAuditHandler()
+		auditLogs := protected.Group("/audit-logs")
+		auditLogs.Use(middleware.AdminRequired())
 		{
-			protected.GET("/audit-logs", auditHandler.ListAuditLogs)
-			protected.GET("/audit-logs/stats", auditHandler.GetAuditStats)
+			auditLogs.GET("", auditHandler.ListAuditLogs)
+			auditLogs.GET("/stats", auditHandler.GetAuditStats)
 		}
 
 		// ─── Data Export ───
@@ -413,11 +426,15 @@ func main() {
 		}
 	}
 
-	// ─── WebSocket ───
+	// ─── WebSocket (requires auth) ───
 	wsHandler := handler.NewWebSocketHandler()
-	r.GET("/ws", wsHandler.ServeWS)
-	r.GET("/ws/stats", wsHandler.WSStats)
-	r.GET("/ws/room/:room_id", wsHandler.SubscribeRoom)
+	wsGroup := r.Group("/ws")
+	wsGroup.Use(middleware.AuthRequired())
+	{
+		wsGroup.GET("", wsHandler.ServeWS)
+		wsGroup.GET("/stats", wsHandler.WSStats)
+		wsGroup.GET("/room/:room_id", wsHandler.SubscribeRoom)
+	}
 
 	// ─── Start Server ───
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)

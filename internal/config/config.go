@@ -45,6 +45,12 @@ func (d *DatabaseConfig) DSN() string {
 		d.Host, d.Port, d.User, d.Password, d.DBName, d.SSLMode)
 }
 
+// SafeDSN returns a DSN string with password masked (for logging)
+func (d *DatabaseConfig) SafeDSN() string {
+	return fmt.Sprintf("host=%s port=%d user=%s password=**** dbname=%s sslmode=%s",
+		d.Host, d.Port, d.User, d.DBName, d.SSLMode)
+}
+
 type RedisConfig struct {
 	Host     string `json:"host"`
 	Port     int    `json:"port"`

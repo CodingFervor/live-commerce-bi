@@ -32,10 +32,43 @@ type AIConfig struct {
 	IsDefault   bool      `json:"is_default" db:"is_default"`
 	IsEnabled   bool      `json:"is_enabled" db:"is_enabled"`
 	ProxyURL    string    `json:"proxy_url,omitempty" db:"proxy_url"`
-	ExtraConfig string    `json:"extra_config,omitempty" db:"extra_config"` // JSON for provider-specific settings
+	ExtraConfig string    `json:"extra_config,omitempty" db:"extra_config"`
 	CreatedBy   int64     `json:"created_by" db:"created_by"`
 	CreatedAt   time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+}
+
+// MaskedAPIKey returns the API key with only last 4 characters visible
+func (c *AIConfig) MaskedAPIKey() string {
+	if c.APIKey == "" {
+		return ""
+	}
+	if len(c.APIKey) <= 8 {
+		return "****"
+	}
+	return "sk-****" + c.APIKey[len(c.APIKey)-4:]
+}
+
+// ToPublic returns a safe copy with masked API key for API responses
+func (c *AIConfig) ToPublic() map[string]interface{} {
+	return map[string]interface{}{
+		"id":           c.ID,
+		"name":         c.Name,
+		"provider":     c.Provider,
+		"api_key":      c.MaskedAPIKey(),
+		"api_endpoint": c.APIEndpoint,
+		"model_name":   c.ModelName,
+		"max_tokens":   c.MaxTokens,
+		"temperature":  c.Temperature,
+		"top_p":        c.TopP,
+		"is_default":   c.IsDefault,
+		"is_enabled":   c.IsEnabled,
+		"proxy_url":    c.ProxyURL,
+		"extra_config": c.ExtraConfig,
+		"created_by":   c.CreatedBy,
+		"created_at":   c.CreatedAt,
+		"updated_at":   c.UpdatedAt,
+	}
 }
 
 type AIConfigCreate struct {

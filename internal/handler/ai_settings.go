@@ -32,13 +32,18 @@ func NewAIConfigHandler() *AIConfigHandler {
 func (h *AIConfigHandler) ListAIConfigs(c *gin.Context) {
 	list, err := h.repo.List(c.Request.Context())
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to list AI configs")
 		return
 	}
-	response.OK(c, list)
+	// Mask API keys in response
+	masked := make([]map[string]interface{}, len(list))
+	for i, cfg := range list {
+		masked[i] = cfg.ToPublic()
+	}
+	response.OK(c, masked)
 }
 
-// GetAIConfig returns a single AI config
+// GetAIConfig returns a single AI config (API key masked)
 // GET /api/v1/ai/configs/:id
 func (h *AIConfigHandler) GetAIConfig(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -47,7 +52,7 @@ func (h *AIConfigHandler) GetAIConfig(c *gin.Context) {
 		response.NotFound(c, "AI config not found")
 		return
 	}
-	response.OK(c, cfg)
+	response.OK(c, cfg.ToPublic())
 }
 
 // CreateAIConfig creates a new AI provider configuration
@@ -82,10 +87,10 @@ func (h *AIConfigHandler) CreateAIConfig(c *gin.Context) {
 	}
 
 	if err := h.repo.Create(c.Request.Context(), cfg); err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to create AI config")
 		return
 	}
-	response.Created(c, cfg)
+	response.Created(c, cfg.ToPublic())
 }
 
 // UpdateAIConfig updates an AI configuration
@@ -117,10 +122,10 @@ func (h *AIConfigHandler) UpdateAIConfig(c *gin.Context) {
 	if req.ExtraConfig != nil { cfg.ExtraConfig = *req.ExtraConfig }
 
 	if err := h.repo.Update(c.Request.Context(), cfg); err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to update AI config")
 		return
 	}
-	response.OK(c, cfg)
+	response.OK(c, cfg.ToPublic())
 }
 
 // DeleteAIConfig deletes an AI configuration
@@ -128,7 +133,7 @@ func (h *AIConfigHandler) UpdateAIConfig(c *gin.Context) {
 func (h *AIConfigHandler) DeleteAIConfig(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err := h.repo.Delete(c.Request.Context(), id); err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to delete AI config")
 		return
 	}
 	response.OKMsg(c, "deleted")
@@ -156,7 +161,7 @@ func (h *AIConfigHandler) TestAIConfig(c *gin.Context) {
 func (h *AIConfigHandler) SetDefaultAIConfig(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err := h.repo.SetDefault(c.Request.Context(), id); err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to set default AI config")
 		return
 	}
 	response.OKMsg(c, "default AI config updated")
@@ -194,7 +199,7 @@ func (h *AIChatHandler) Chat(c *gin.Context) {
 		cfg, err = h.aiSvc.LoadDefaultConfig(c.Request.Context())
 	}
 	if err != nil {
-		response.BadRequest(c, "AI config not available: "+err.Error())
+		response.BadRequest(c, "AI config not available")
 		return
 	}
 
@@ -203,6 +208,11 @@ func (h *AIChatHandler) Chat(c *gin.Context) {
 	if req.ConversationID > 0 {
 		conv, err := h.convRepo.GetByID(c.Request.Context(), req.ConversationID)
 		if err == nil {
+			// Ownership check: only the conversation owner can continue it
+			if conv.UserID != middleware.GetUserID(c) {
+				response.Forbidden(c, "access denied to this conversation")
+				return
+			}
 			json.Unmarshal([]byte(conv.Messages), &messages)
 		}
 	}
@@ -212,7 +222,7 @@ func (h *AIChatHandler) Chat(c *gin.Context) {
 	// Call AI
 	aiResp, err := h.aiSvc.SmartQuery(c.Request.Context(), cfg, req.Message, req.Context)
 	if err != nil {
-		response.InternalError(c, "AI request failed: "+err.Error())
+		response.InternalError(c, "AI request failed")
 		return
 	}
 
@@ -254,7 +264,7 @@ func (h *AIChatHandler) ListConversations(c *gin.Context) {
 	response.OK(c, list)
 }
 
-// GetConversation returns a conversation with messages
+// GetConversation returns a conversation with messages (owner only)
 // GET /api/v1/ai/conversations/:id
 func (h *AIChatHandler) GetConversation(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
@@ -263,15 +273,30 @@ func (h *AIChatHandler) GetConversation(c *gin.Context) {
 		response.NotFound(c, "conversation not found")
 		return
 	}
+	// Ownership check
+	if conv.UserID != middleware.GetUserID(c) {
+		response.Forbidden(c, "access denied")
+		return
+	}
 	response.OK(c, conv)
 }
 
-// DeleteConversation deletes a chat conversation
+// DeleteConversation deletes a chat conversation (owner only)
 // DELETE /api/v1/ai/conversations/:id
 func (h *AIChatHandler) DeleteConversation(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	conv, err := h.convRepo.GetByID(c.Request.Context(), id)
+	if err != nil {
+		response.NotFound(c, "conversation not found")
+		return
+	}
+	// Ownership check
+	if conv.UserID != middleware.GetUserID(c) {
+		response.Forbidden(c, "access denied")
+		return
+	}
 	if err := h.convRepo.Delete(c.Request.Context(), id); err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to delete conversation")
 		return
 	}
 	response.OKMsg(c, "deleted")
@@ -288,7 +313,7 @@ func (h *AIChatHandler) GenerateInsights(c *gin.Context) {
 
 	cfg, err := h.aiSvc.LoadDefaultConfig(c.Request.Context())
 	if err != nil {
-		response.BadRequest(c, "no default AI config: "+err.Error())
+		response.BadRequest(c, "AI config not available")
 		return
 	}
 
@@ -297,7 +322,7 @@ func (h *AIChatHandler) GenerateInsights(c *gin.Context) {
 
 	result, err := h.aiSvc.GenerateInsights(c.Request.Context(), cfg, &req, analyticsData)
 	if err != nil {
-		response.InternalError(c, "AI insight generation failed: "+err.Error())
+		response.InternalError(c, "AI insight generation failed")
 		return
 	}
 	response.OK(c, result)
@@ -327,7 +352,7 @@ func (h *SystemSettingHandler) ListSettings(c *gin.Context) {
 	if category != "" {
 		list, err := h.repo.ListByCategory(c.Request.Context(), category)
 		if err != nil {
-			response.InternalError(c, err.Error())
+			response.InternalError(c, "failed to load settings")
 			return
 		}
 		response.OK(c, list)
@@ -336,12 +361,15 @@ func (h *SystemSettingHandler) ListSettings(c *gin.Context) {
 
 	all, err := h.repo.ListAll(c.Request.Context())
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to load settings")
 		return
 	}
-	// Group by category
+	// Group by category, mask sensitive values
 	grouped := make(map[string][]model.SystemSetting)
 	for _, s := range all {
+		if !s.IsPublic && isSensitiveKey(s.Key) {
+			s.Value = "******"
+		}
 		grouped[s.Category] = append(grouped[s.Category], s)
 	}
 	response.OK(c, grouped)
@@ -374,7 +402,7 @@ func (h *SystemSettingHandler) UpdateSetting(c *gin.Context) {
 		Remark:   req.Remark,
 	}
 	if err := h.repo.Upsert(c.Request.Context(), setting); err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to update setting")
 		return
 	}
 	response.OKMsg(c, "updated")
@@ -389,7 +417,7 @@ func (h *SystemSettingHandler) BatchUpdateSettings(c *gin.Context) {
 		return
 	}
 	if err := h.repo.BatchUpsert(c.Request.Context(), settings); err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to update settings")
 		return
 	}
 	response.OKMsg(c, "settings updated")
@@ -411,7 +439,7 @@ func (h *SystemSettingHandler) UpdateSMTPConfig(c *gin.Context) {
 	}
 	settings := smtpToSettings(cfg)
 	if err := h.repo.BatchUpsert(c.Request.Context(), settings); err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to update SMTP config")
 		return
 	}
 	response.OKMsg(c, "SMTP config updated")
@@ -433,7 +461,7 @@ func (h *SystemSettingHandler) UpdateStorageConfig(c *gin.Context) {
 	}
 	settings := storageToSettings(cfg)
 	if err := h.repo.BatchUpsert(c.Request.Context(), settings); err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to update storage config")
 		return
 	}
 	response.OKMsg(c, "storage config updated")
@@ -455,7 +483,7 @@ func (h *SystemSettingHandler) UpdateSecurityConfig(c *gin.Context) {
 	}
 	settings := securityToSettings(cfg)
 	if err := h.repo.BatchUpsert(c.Request.Context(), settings); err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to update security config")
 		return
 	}
 	response.OKMsg(c, "security config updated")
@@ -474,10 +502,27 @@ func (h *SystemSettingHandler) GetSystemInfo(c *gin.Context) {
 func (h *SystemSettingHandler) getCategorySettings(c *gin.Context, category string) {
 	list, err := h.repo.ListByCategory(c.Request.Context(), category)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to load settings")
 		return
 	}
-	response.OK(c, list)
+	// Mask sensitive values for non-system internal settings
+	masked := make([]model.SystemSetting, len(list))
+	for i, s := range list {
+		if !s.IsPublic && isSensitiveKey(s.Key) {
+			s.Value = "******"
+		}
+		masked[i] = s
+	}
+	response.OK(c, masked)
+}
+
+// isSensitiveKey identifies setting keys that should be masked in responses
+func isSensitiveKey(key string) bool {
+	sensitiveKeys := map[string]bool{
+		"password": true, "secret_key": true, "access_key": true,
+		"smtp_password": true, "api_key": true, "token": true,
+	}
+	return sensitiveKeys[key]
 }
 
 func smtpToSettings(cfg model.SMTPConfig) []model.SystemSetting {

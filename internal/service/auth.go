@@ -25,24 +25,51 @@ func (s *AuthService) Register(ctx context.Context, req *model.RegisterRequest) 
 	if existing != nil {
 		return nil, errors.New("username already exists")
 	}
+
+	// Enforce password policy
+	if err := validatePassword(req.Password); err != nil {
+		return nil, err
+	}
+
 	hashedPwd, err := hash.HashPassword(req.Password)
 	if err != nil {
 		return nil, err
 	}
-	role := req.Role
-	if role == "" {
-		role = "analyst"
-	}
+	// Always assign "analyst" role — privilege escalation prevention
 	user := &model.User{
 		Username: req.Username,
 		Email:    req.Email,
 		Password: hashedPwd,
-		Role:     role,
+		Role:     "analyst",
 	}
 	if err := s.repo.CreateUser(ctx, user); err != nil {
 		return nil, err
 	}
 	return user, nil
+}
+
+// validatePassword enforces security password policies
+func validatePassword(password string) error {
+	if len(password) < 8 {
+		return errors.New("password must be at least 8 characters")
+	}
+	hasUpper := false
+	hasDigit := false
+	for _, c := range password {
+		if c >= 'A' && c <= 'Z' {
+			hasUpper = true
+		}
+		if c >= '0' && c <= '9' {
+			hasDigit = true
+		}
+	}
+	if !hasUpper {
+		return errors.New("password must contain at least one uppercase letter")
+	}
+	if !hasDigit {
+		return errors.New("password must contain at least one digit")
+	}
+	return nil
 }
 
 func (s *AuthService) Login(ctx context.Context, req *model.LoginRequest) (*model.LoginResponse, error) {

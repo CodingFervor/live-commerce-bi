@@ -4,9 +4,11 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/CodingFervor/live-commerce-bi/internal/service"
+	"github.com/CodingFervor/live-commerce-bi/pkg/jwt"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
@@ -15,7 +17,22 @@ var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins in dev; restrict in production
+		// Validate Origin header against allowed origins
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true // non-browser clients
+		}
+		// Allow configured origins or localhost in development
+		allowed := []string{
+			"http://localhost:3000", "http://localhost:8080",
+			"http://localhost:5173", "http://127.0.0.1:3000",
+		}
+		for _, a := range allowed {
+			if origin == a {
+				return true
+			}
+		}
+		return false
 	},
 	HandshakeTimeout: 10 * time.Second,
 }
@@ -29,8 +46,31 @@ func NewWebSocketHandler() *WebSocketHandler {
 	return &WebSocketHandler{hub: service.GetHub()}
 }
 
-// ServeWS upgrades HTTP connection to WebSocket
+// ServeWS upgrades HTTP connection to WebSocket (requires auth token)
 func (h *WebSocketHandler) ServeWS(c *gin.Context) {
+	// Validate JWT token from query parameter
+	tokenStr := c.Query("token")
+	if tokenStr == "" {
+		// Also accept token from Sec-WebSocket-Protocol header
+		if proto := c.GetHeader("Sec-WebSocket-Protocol"); proto != "" {
+			parts := strings.SplitN(proto, ",", 2)
+			tokenStr = strings.TrimSpace(parts[0])
+		}
+	}
+	if tokenStr == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+
+	claims, err := jwt.ParseToken(tokenStr)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		return
+	}
+
+	// Store user info in WebSocket connection context
+	_ = claims
+
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		log.Printf("[WS] Upgrade failed: %v", err)

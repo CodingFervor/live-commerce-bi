@@ -313,12 +313,14 @@ func (s *AIService) doRequest(ctx context.Context, endpoint, apiKey string, body
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("AI API error %d: %s", resp.StatusCode, string(respData))
+		logger.Error("AI API error %d for endpoint %s", resp.StatusCode, endpoint)
+		return nil, fmt.Errorf("AI provider returned error (status %d)", resp.StatusCode)
 	}
 
 	var result ChatCompletionResponse
 	if err := json.Unmarshal(respData, &result); err != nil {
-		return nil, fmt.Errorf("parse response: %w (body: %s)", err, string(respData[:min(len(respData), 500)]))
+		logger.Error("Failed to parse AI response: %v", err)
+		return nil, fmt.Errorf("failed to parse AI provider response")
 	}
 
 	return &result, nil

@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/CodingFervor/live-commerce-bi/internal/middleware"
 	"github.com/CodingFervor/live-commerce-bi/internal/model"
@@ -50,11 +52,30 @@ func (h *ReportHandler) Get(c *gin.Context) {
 		response.NotFound(c, "report not found")
 		return
 	}
+	// Ownership check
+	userID := middleware.GetUserID(c)
+	role, _ := c.Get("role")
+	if role != "admin" && rp.GeneratedBy != userID {
+		response.Forbidden(c, "access denied")
+		return
+	}
 	response.OK(c, rp)
 }
 
 func (h *ReportHandler) Update(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	// Ownership check
+	existing, err := h.svc.GetReport(c.Request.Context(), id)
+	if err != nil {
+		response.NotFound(c, "report not found")
+		return
+	}
+	userID := middleware.GetUserID(c)
+	role, _ := c.Get("role")
+	if role != "admin" && existing.GeneratedBy != userID {
+		response.Forbidden(c, "access denied")
+		return
+	}
 	var req model.ReportCreate
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, err.Error())
@@ -62,7 +83,7 @@ func (h *ReportHandler) Update(c *gin.Context) {
 	}
 	rp, err := h.svc.UpdateReport(c.Request.Context(), id, &req)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to update report")
 		return
 	}
 	response.OK(c, rp)
@@ -70,8 +91,20 @@ func (h *ReportHandler) Update(c *gin.Context) {
 
 func (h *ReportHandler) Delete(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	// Ownership check
+	existing, err := h.svc.GetReport(c.Request.Context(), id)
+	if err != nil {
+		response.NotFound(c, "report not found")
+		return
+	}
+	userID := middleware.GetUserID(c)
+	role, _ := c.Get("role")
+	if role != "admin" && existing.GeneratedBy != userID {
+		response.Forbidden(c, "access denied")
+		return
+	}
 	if err := h.svc.DeleteReport(c.Request.Context(), id); err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to delete report")
 		return
 	}
 	response.OKMsg(c, "deleted")
@@ -81,7 +114,7 @@ func (h *ReportHandler) Generate(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
 	rp, err := h.svc.Generate(c.Request.Context(), id)
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to generate report")
 		return
 	}
 	response.OK(c, rp)
@@ -94,7 +127,20 @@ func (h *ReportHandler) Download(c *gin.Context) {
 		response.NotFound(c, "report file not found")
 		return
 	}
-	c.File(rp.FilePath)
+	// Ownership check
+	userID := middleware.GetUserID(c)
+	role, _ := c.Get("role")
+	if role != "admin" && rp.GeneratedBy != userID {
+		response.Forbidden(c, "access denied")
+		return
+	}
+	// Prevent path traversal: ensure file path is within allowed directory
+	absPath, err := filepath.Abs(rp.FilePath)
+	if err != nil || !strings.HasPrefix(absPath, "reports") && !strings.HasPrefix(absPath, "exports") {
+		response.InternalError(c, "invalid file path")
+		return
+	}
+	c.File(absPath)
 }
 
 func (h *ReportHandler) ListTemplates(c *gin.Context) {

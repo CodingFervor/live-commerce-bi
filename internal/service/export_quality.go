@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +16,44 @@ import (
 	"github.com/CodingFervor/live-commerce-bi/internal/model"
 	"github.com/CodingFervor/live-commerce-bi/pkg/logger"
 )
+
+// allowedExportTables restricts which tables export queries can access
+var allowedExportTables = map[string]bool{
+	"orders": true, "live_rooms": true, "products": true, "streamers": true,
+	"viewer_metrics": true, "viewer_demographics": true, "revenue_records": true,
+	"platform_metrics": true, "metrics_hourly": true, "metrics_daily": true,
+}
+
+// validateExportSQL checks that an export SQL query is a safe SELECT statement
+func validateExportSQL(sql string) error {
+	normalized := strings.TrimSpace(strings.ToUpper(sql))
+	if !strings.HasPrefix(normalized, "SELECT") {
+		return fmt.Errorf("only SELECT queries are allowed")
+	}
+	forbidden := []string{"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE", "GRANT", "EXECUTE", ";"}
+	for _, kw := range forbidden {
+		if strings.Contains(normalized, kw) {
+			return fmt.Errorf("forbidden keyword in query: %s", kw)
+		}
+	}
+	return nil
+}
+
+// safeExpression sanitizes a quality rule expression to prevent SQL injection
+// Only allows: digits, decimal points, comparison operators, AND/OR/NOT, parentheses,
+// column names (alphanumeric + underscore), and basic SQL operators
+var safeExpressionRe = regexp.MustCompile(`^[0-9a-zA-Z_\.\s,\-<>=!()'"AND OR NOT BETWEEN IN LIKE]+package service
+
+)
+
+func safeExpression(expr string) string {
+	expr = strings.TrimSpace(expr)
+	if safeExpressionRe.MatchString(expr) {
+		return expr
+	}
+	// If expression doesn't match safe pattern, reject it
+	return "1=0" // always false — will report all rows as failing
+}
 
 // ═══ Enhanced Service Layer ═══
 // Async Export Executor, Data Quality Checker, Schedule Dispatcher
@@ -65,16 +106,22 @@ func (e *ExportExecutor) executeExport(ctx context.Context, task *model.ExportTa
 	}
 	if err := json.Unmarshal([]byte(task.Params), &params); err != nil {
 		task.Status = "failed"
-		task.ErrorMsg = "invalid params: " + err.Error()
+		task.ErrorMsg = "invalid export parameters"
 		updateExportStatus(task.ID, "failed", "", task.ErrorMsg)
 		return
 	}
 
-	// Query data
+	// Validate and query data (prevent SQL injection)
+	if err := validateExportSQL(params.SQL); err != nil {
+		task.Status = "failed"
+		task.ErrorMsg = "invalid query: only safe SELECT statements are allowed"
+		updateExportStatus(task.ID, "failed", "", task.ErrorMsg)
+		return
+	}
 	rows, err := database.Get().Query(ctx, params.SQL)
 	if err != nil {
 		task.Status = "failed"
-		task.ErrorMsg = "query failed: " + err.Error()
+		task.ErrorMsg = "query execution failed"
 		updateExportStatus(task.ID, "failed", "", task.ErrorMsg)
 		return
 	}
@@ -128,7 +175,7 @@ func (e *ExportExecutor) executeExport(ctx context.Context, task *model.ExportTa
 
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		task.Status = "failed"
-		task.ErrorMsg = "write file failed: " + err.Error()
+		task.ErrorMsg = "failed to write export file"
 		updateExportStatus(task.ID, "failed", "", task.ErrorMsg)
 		return
 	}
@@ -303,9 +350,31 @@ func (c *DataQualityChecker) checkRange(ctx context.Context, rule *model.DataQua
 		fmt.Sprintf("SELECT COUNT(*) FROM %s", safeTableName(rule.TableName)),
 	).Scan(&result.TotalRows)
 
-	// Expression is like "min,max"
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE NOT (%s >= %s)",
-		safeTableName(rule.TableName), safeColumnName(rule.ColumnName), rule.Expression)
+	// Expression is like "min,max" — validate as numeric range
+	expr := safeExpression(rule.Expression)
+	// Parse "min,max" format and validate both parts are numeric
+	parts := strings.SplitN(expr, ",", 2)
+	if len(parts) == 2 {
+		minVal := strings.TrimSpace(parts[0])
+		maxVal := strings.TrimSpace(parts[1])
+		if _, err := strconv.ParseFloat(minVal, 64); err != nil {
+			result.Status = "error"
+			result.Detail = fmt.Sprintf("invalid range min value: %s", minVal)
+			return result
+		}
+		if _, err := strconv.ParseFloat(maxVal, 64); err != nil {
+			result.Status = "error"
+			result.Detail = fmt.Sprintf("invalid range max value: %s", maxVal)
+			return result
+		}
+	}
+	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE NOT (%s >= %s AND %s <= %s)",
+		safeTableName(rule.TableName), safeColumnName(rule.ColumnName), safeExpression(parts[0]),
+		safeColumnName(rule.ColumnName), safeExpression(parts[len(parts)-1]))
+	if len(parts) == 1 {
+		query = fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE NOT (%s >= %s)",
+			safeTableName(rule.TableName), safeColumnName(rule.ColumnName), safeExpression(parts[0]))
+	}
 
 	database.Get().QueryRow(ctx, query).Scan(&result.FailRows)
 
@@ -332,8 +401,11 @@ func (c *DataQualityChecker) checkRegex(ctx context.Context, rule *model.DataQua
 		fmt.Sprintf("SELECT COUNT(*) FROM %s", safeTableName(rule.TableName)),
 	).Scan(&result.TotalRows)
 
+	// Sanitize regex expression: remove single quotes to prevent injection
+	safeRegex := strings.ReplaceAll(rule.Expression, "'", "''")
+	safeRegex = strings.ReplaceAll(safeRegex, "\\", "")
 	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s !~ '%s'",
-		safeTableName(rule.TableName), safeColumnName(rule.ColumnName), rule.Expression)
+		safeTableName(rule.TableName), safeColumnName(rule.ColumnName), safeRegex)
 
 	database.Get().QueryRow(ctx, query).Scan(&result.FailRows)
 
@@ -360,9 +432,10 @@ func (c *DataQualityChecker) checkCustom(ctx context.Context, rule *model.DataQu
 		fmt.Sprintf("SELECT COUNT(*) FROM %s", safeTableName(rule.TableName)),
 	).Scan(&result.TotalRows)
 
-	// Expression is a WHERE clause for failing rows
+	// Expression is a WHERE clause — sanitize strictly
+	safeExpr := safeExpression(rule.Expression)
 	query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s",
-		safeTableName(rule.TableName), rule.Expression)
+		safeTableName(rule.TableName), safeExpr)
 
 	database.Get().QueryRow(ctx, query).Scan(&result.FailRows)
 

@@ -22,12 +22,12 @@ func NewAuthHandler() *AuthHandler {
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req model.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "invalid request: "+err.Error())
+		response.BadRequest(c, "invalid request")
 		return
 	}
 	result, err := h.svc.Login(c.Request.Context(), &req)
 	if err != nil {
-		response.Unauthorized(c, err.Error())
+		response.Unauthorized(c, "invalid credentials")
 		return
 	}
 	response.OK(c, result)
@@ -36,7 +36,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req model.RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "invalid request: "+err.Error())
+		response.BadRequest(c, "invalid request")
 		return
 	}
 	user, err := h.svc.Register(c.Request.Context(), &req)

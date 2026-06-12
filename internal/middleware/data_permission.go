@@ -74,7 +74,8 @@ func (ds *DataScope) ApplyDataFilter(tableName string) string {
 	if len(ds.PlatformFilter) > 0 {
 		platforms := make([]string, len(ds.PlatformFilter))
 		for i, p := range ds.PlatformFilter {
-			platforms[i] = fmt.Sprintf("'%s'", p)
+			// Escape single quotes to prevent SQL injection
+			platforms[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(p, "'", "''"))
 		}
 		conditions = append(conditions,
 			fmt.Sprintf("%s.platform IN (%s)", tableName, strings.Join(platforms, ",")))

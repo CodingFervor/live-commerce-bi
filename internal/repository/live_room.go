@@ -121,14 +121,28 @@ func (r *LiveRoomRepo) GetByID(ctx context.Context, id int64) (*model.LiveRoom, 
 	return &lr, nil
 }
 
+// allowedMetricColumns restricts which columns can be updated via UpdateMetrics
+var allowedMetricColumns = map[string]bool{
+	"peak_viewers": true, "avg_viewers": true, "total_views": true,
+	"total_likes": true, "total_comments": true, "total_shares": true,
+	"gmv": true, "order_count": true, "product_count": true,
+	"conversion_rate": true, "duration": true, "status": true,
+}
+
 func (r *LiveRoomRepo) UpdateMetrics(ctx context.Context, id int64, metrics map[string]interface{}) error {
 	setClauses := []string{"updated_at = $1"}
 	args := []interface{}{time.Now()}
 	i := 2
 	for k, v := range metrics {
+		if !allowedMetricColumns[k] {
+			continue // skip unauthorized column names
+		}
 		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", k, i))
 		args = append(args, v)
 		i++
+	}
+	if len(setClauses) == 1 {
+		return nil // nothing to update after filtering
 	}
 	args = append(args, id)
 	query := "UPDATE live_rooms SET " + strings.Join(setClauses, ", ") + fmt.Sprintf(" WHERE id = $%d", i)

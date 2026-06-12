@@ -293,6 +293,13 @@ func (h *ExportHandler) DownloadExport(c *gin.Context) {
 		response.NotFound(c, "export file not found")
 		return
 	}
+	// Ownership check
+	userID := middleware.GetUserID(c)
+	role, _ := c.Get("role")
+	if role != "admin" && t.UserID != userID {
+		response.Forbidden(c, "access denied")
+		return
+	}
 	c.File(t.FilePath)
 }
 

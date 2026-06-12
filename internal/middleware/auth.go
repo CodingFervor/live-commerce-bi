@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/CodingFervor/live-commerce-bi/pkg/jwt"
@@ -75,9 +76,26 @@ func GetUserID(c *gin.Context) int64 {
 
 func CORS() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
+		origin := c.GetHeader("Origin")
+		allowed := false
+		// In production, restrict to explicit allowlist from env
+		allowedOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
+		if allowedOrigins == "" {
+			// Default: allow same-origin and localhost for development
+			allowedOrigins = "http://localhost:3000,http://localhost:8080,http://localhost:5173"
+		}
+		for _, o := range splitComma(allowedOrigins) {
+			if o == origin || (o == "*" && os.Getenv("GIN_MODE") == "debug") {
+				allowed = true
+				break
+			}
+		}
+		if allowed && origin != "" {
+			c.Header("Access-Control-Allow-Origin", origin)
+		}
 		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS,PATCH")
 		c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Requested-With")
+		c.Header("Access-Control-Allow-Credentials", "true")
 		c.Header("Access-Control-Max-Age", "86400")
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -85,4 +103,15 @@ func CORS() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+func splitComma(s string) []string {
+	var result []string
+	for _, v := range strings.Split(s, ",") {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			result = append(result, v)
+		}
+	}
+	return result
 }

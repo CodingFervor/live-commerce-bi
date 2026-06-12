@@ -1,6 +1,7 @@
 package response
 
 import (
+	"log"
 	"net/http"
 	"runtime/debug"
 
@@ -61,7 +62,9 @@ func NotFound(c *gin.Context, msg string) {
 }
 
 func InternalError(c *gin.Context, msg string) {
-	Error(c, http.StatusInternalServerError, msg)
+	// Log full error server-side, return generic message to client
+	log.Printf("[ERROR] request_id=%s path=%s err=%s", c.GetString("request_id"), c.Request.URL.Path, msg)
+	Error(c, http.StatusInternalServerError, "internal server error")
 }
 
 func TooManyRequests(c *gin.Context, msg string) {
@@ -86,15 +89,16 @@ func newResponse(c *gin.Context, code int, msg string, data interface{}) Respons
 }
 
 // RecoveryHandler returns a gin.HandlerFunc that recovers from panics
-// and returns a proper JSON error response with stack trace in dev mode
+// and returns a proper JSON error response. Stack traces are logged
+// server-side only and never exposed to the client.
 func RecoveryHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if err := recover(); err != nil {
-				// Log the stack trace
-				debug.PrintStack()
+				// Log the error and stack trace server-side only
+				log.Printf("[PANIC] %v\n%s", err, debug.Stack())
 
-				// Return JSON error
+				// Return generic error to client — no internal details
 				c.AbortWithStatusJSON(http.StatusInternalServerError, Response{
 					Code:      -1,
 					Message:   "internal server error",

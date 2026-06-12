@@ -1,6 +1,8 @@
 package jwt
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -21,18 +23,35 @@ type Claims struct {
 }
 
 func GenerateToken(userID int64, username, role string, expireHours time.Duration) (string, error) {
+	// Generate unique token ID for potential revocation
+	jti, err := generateTokenID()
+	if err != nil {
+		return "", err
+	}
+
 	claims := Claims{
 		UserID:   userID,
 		Username: username,
 		Role:     role,
 		RegisteredClaims: jwtv5.RegisteredClaims{
+			ID:        jti,
+			Issuer:    "live-commerce-bi",
+			Subject:   username,
+			Audience:  jwtv5.ClaimStrings{"live-commerce-bi-api"},
 			ExpiresAt: jwtv5.NewNumericDate(time.Now().Add(expireHours * time.Hour)),
 			IssuedAt:  jwtv5.NewNumericDate(time.Now()),
-			Issuer:    "live-commerce-bi",
 		},
 	}
 	token := jwtv5.NewWithClaims(jwtv5.SigningMethodHS256, claims)
 	return token.SignedString(secretKey)
+}
+
+func generateTokenID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func ParseToken(tokenStr string) (*Claims, error) {
