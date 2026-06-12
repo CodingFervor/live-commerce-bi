@@ -371,6 +371,46 @@ func main() {
 			protected.GET("/screen/rankings", screenHandler.Rankings)
 			protected.GET("/screen/geographic", screenHandler.Geographic)
 		}
+
+		// ─── AI Intelligence ───
+		aiConfigHandler := handler.NewAIConfigHandler()
+		aiChatHandler := handler.NewAIChatHandler()
+		aiConfigAdmin := protected.Group("/ai/configs")
+		aiConfigAdmin.Use(middleware.AdminRequired())
+		{
+			aiConfigAdmin.GET("", aiConfigHandler.ListAIConfigs)
+			aiConfigAdmin.GET("/:id", aiConfigHandler.GetAIConfig)
+			aiConfigAdmin.POST("", aiConfigHandler.CreateAIConfig)
+			aiConfigAdmin.PUT("/:id", aiConfigHandler.UpdateAIConfig)
+			aiConfigAdmin.DELETE("/:id", aiConfigHandler.DeleteAIConfig)
+			aiConfigAdmin.POST("/:id/test", aiConfigHandler.TestAIConfig)
+			aiConfigAdmin.POST("/:id/default", aiConfigHandler.SetDefaultAIConfig)
+		}
+		{
+			protected.POST("/ai/chat", aiChatHandler.Chat)
+			protected.POST("/ai/insights", aiChatHandler.GenerateInsights)
+			protected.GET("/ai/conversations", aiChatHandler.ListConversations)
+			protected.GET("/ai/conversations/:id", aiChatHandler.GetConversation)
+			protected.DELETE("/ai/conversations/:id", aiChatHandler.DeleteConversation)
+		}
+
+		// ─── System Settings (Admin) ───
+		settingHandler := handler.NewSystemSettingHandler()
+		settingsAdmin := protected.Group("/settings")
+		settingsAdmin.Use(middleware.AdminRequired())
+		{
+			settingsAdmin.GET("", settingHandler.ListSettings)
+			settingsAdmin.GET("/:category/:key", settingHandler.GetSetting)
+			settingsAdmin.PUT("/:category/:key", settingHandler.UpdateSetting)
+			settingsAdmin.POST("/batch", settingHandler.BatchUpdateSettings)
+			settingsAdmin.GET("/smtp", settingHandler.GetSMTPConfig)
+			settingsAdmin.POST("/smtp", settingHandler.UpdateSMTPConfig)
+			settingsAdmin.GET("/storage", settingHandler.GetStorageConfig)
+			settingsAdmin.POST("/storage", settingHandler.UpdateStorageConfig)
+			settingsAdmin.GET("/security", settingHandler.GetSecurityConfig)
+			settingsAdmin.POST("/security", settingHandler.UpdateSecurityConfig)
+			settingsAdmin.GET("/system-info", settingHandler.GetSystemInfo)
+		}
 	}
 
 	// ─── WebSocket ───
