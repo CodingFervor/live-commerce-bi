@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -129,7 +130,7 @@ func loadDataScope(ctx context.Context, userID int64) *DataScope {
 
 	for rows.Next() {
 		var dimension, values string
-		if rows.Scan(&dimension, values) != nil {
+		if rows.Scan(&dimension, &values) != nil {
 			continue
 		}
 
@@ -154,4 +155,12 @@ func loadDataScope(ctx context.Context, userID int64) *DataScope {
 		"SELECT organization_id FROM users WHERE id=$1", userID).Scan(&scope.OrganizationID)
 
 	return scope
+}
+
+// parseJSONArray decodes a JSON array string into a Go slice
+func parseJSONArray(data string, target interface{}) {
+	if data == "" {
+		return
+	}
+	json.Unmarshal([]byte(data), target)
 }

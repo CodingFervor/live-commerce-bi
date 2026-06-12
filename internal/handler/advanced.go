@@ -468,11 +468,46 @@ func (h *DataQualityHandler) ListRules(c *gin.Context) {
 }
 
 func (h *DataQualityHandler) RunCheck(c *gin.Context) {
-	response.OK(c, gin.H{"message": "quality check triggered", "rule_id": c.Param("id")})
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	// Load the rule
+	rules, err := h.repo.ListRules(c.Request.Context())
+	if err != nil {
+		response.InternalError(c, "failed to load quality rules")
+		return
+	}
+	var targetRule *model.DataQualityRule
+	for i := range rules {
+		if rules[i].ID == id {
+			targetRule = &rules[i]
+			break
+		}
+	}
+	if targetRule == nil {
+		response.NotFound(c, "quality rule not found")
+		return
+	}
+	// Execute the check via DataQualityChecker
+	checker := service.NewDataQualityChecker()
+	result, err := checker.RunCheck(c.Request.Context(), targetRule)
+	if err != nil {
+		response.InternalError(c, "quality check failed")
+		return
+	}
+	response.OK(c, result)
 }
 
 func (h *DataQualityHandler) GetResults(c *gin.Context) {
-	response.OK(c, []interface{}{})
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	// Query recent results for this rule from database
+	results, err := h.repo.ListResults(c.Request.Context(), id)
+	if err != nil {
+		response.InternalError(c, "failed to load quality results")
+		return
+	}
+	if results == nil {
+		results = []interface{}{}
+	}
+	response.OK(c, results)
 }
 
 // ═══ Event Tracking Handler ═══
@@ -522,7 +557,21 @@ func (h *EventHandler) GetFunnelEvents(c *gin.Context) {
 }
 
 func (h *EventHandler) GetUserPaths(c *gin.Context) {
-	response.OK(c, []interface{}{})
+	roomID, _ := strconv.ParseInt(c.Query("live_room_id"), 10, 64)
+	if roomID == 0 {
+		response.BadRequest(c, "live_room_id is required")
+		return
+	}
+	engine := service.NewAnalyticsEngine()
+	paths, err := engine.UserPathAnalysis(c.Request.Context(), roomID)
+	if err != nil {
+		response.InternalError(c, "failed to get user paths")
+		return
+	}
+	if paths == nil {
+		paths = []model.UserBehaviorPath{}
+	}
+	response.OK(c, paths)
 }
 
 // ═══ Metrics Aggregation Handler ═══
@@ -536,21 +585,30 @@ func NewMetricsAggHandler() *MetricsAggHandler {
 }
 
 func (h *MetricsAggHandler) GetHourlyMetrics(c *gin.Context) {
-	response.OK(c, gin.H{"message": "hourly metrics", "platform": c.Query("platform")})
-}
-
-func (h *MetricsAggHandler) GetDailyMetrics(c *gin.Context) {
-	data, err := h.repo.GetDailyMetrics(c.Request.Context(),
+	data, err := h.repo.GetHourlyMetrics(c.Request.Context(),
 		c.Query("platform"), c.Query("start_date"), c.Query("end_date"))
 	if err != nil {
-		response.InternalError(c, err.Error())
+		response.InternalError(c, "failed to get hourly metrics")
 		return
+	}
+	if data == nil {
+		data = []model.MetricsHourly{}
 	}
 	response.OK(c, data)
 }
 
 func (h *MetricsAggHandler) GetStreamerDaily(c *gin.Context) {
-	response.OK(c, []interface{}{})
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	data, err := h.repo.GetStreamerDaily(c.Request.Context(), id,
+		c.Query("start_date"), c.Query("end_date"))
+	if err != nil {
+		response.InternalError(c, "failed to get streamer metrics")
+		return
+	}
+	if data == nil {
+		data = []model.MetricsDaily{}
+	}
+	response.OK(c, data)
 }
 
 // suppress unused import

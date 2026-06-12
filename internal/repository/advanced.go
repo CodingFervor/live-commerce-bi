@@ -430,11 +430,90 @@ func (r *DataQualityRepo) ListRules(ctx context.Context) ([]model.DataQualityRul
 	return list, nil
 }
 
+func (r *DataQualityRepo) ListResults(ctx context.Context, ruleID int64) ([]interface{}, error) {
+	rows, err := database.Get().Query(ctx,
+		`SELECT id, rule_id, status, total_rows, pass_rows, fail_rows, pass_rate, detail, checked_at
+		FROM data_quality_results WHERE rule_id=$1 ORDER BY checked_at DESC LIMIT 50`, ruleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []interface{}
+	for rows.Next() {
+		var id, ruleID2, totalRows, passRows, failRows int64
+		var status string
+		var passRate float64
+		var detail string
+		var checkedAt string
+		if err := rows.Scan(&id, &ruleID2, &status, &totalRows, &passRows, &failRows, &passRate, &detail, &checkedAt); err != nil {
+			continue
+		}
+		list = append(list, map[string]interface{}{
+			"id": id, "rule_id": ruleID2, "status": status,
+			"total_rows": totalRows, "pass_rows": passRows, "fail_rows": failRows,
+			"pass_rate": passRate, "detail": detail, "checked_at": checkedAt,
+		})
+	}
+	return list, nil
+}
+
 // ─── Metrics Aggregation Repository ───
 
 type MetricsAggRepo struct{}
 
 func NewMetricsAggRepo() *MetricsAggRepo { return &MetricsAggRepo{} }
+
+func (r *MetricsAggRepo) GetHourlyMetrics(ctx context.Context, platform, startDate, endDate string) ([]model.MetricsHourly, error) {
+	args := []interface{}{startDate, endDate + " 23:59:59"}
+	platformFilter := ""
+	if platform != "" {
+		platformFilter = " AND platform=$3"
+		args = append(args, platform)
+	}
+	rows, err := database.Get().Query(ctx,
+		`SELECT id, platform, hour, streamer_id, live_room_id, gmv, order_count, viewer_count, peak_viewers,
+		like_count, comment_count, share_count, conversion_rate, avg_watch_time, new_followers, gift_count, gift_value, created_at
+		FROM metrics_hourly WHERE hour BETWEEN $1 AND $2`+platformFilter+" ORDER BY hour DESC", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []model.MetricsHourly
+	for rows.Next() {
+		var m model.MetricsHourly
+		if err := rows.Scan(&m.ID, &m.Platform, &m.Hour, &m.StreamerID, &m.LiveRoomID, &m.GMV, &m.OrderCount,
+			&m.ViewerCount, &m.PeakViewers, &m.LikeCount, &m.CommentCount, &m.ShareCount,
+			&m.ConversionRate, &m.AvgWatchTime, &m.NewFollowers, &m.GiftCount, &m.GiftValue, &m.CreatedAt); err != nil {
+			continue
+		}
+		list = append(list, m)
+	}
+	return list, nil
+}
+
+func (r *MetricsAggRepo) GetStreamerDaily(ctx context.Context, streamerID int64, startDate, endDate string) ([]model.MetricsDaily, error) {
+	args := []interface{}{streamerID, startDate, endDate + " 23:59:59"}
+	rows, err := database.Get().Query(ctx,
+		`SELECT id, platform, date, streamer_id, live_room_count, total_duration, gmv, order_count, viewer_count, peak_viewers,
+		like_count, comment_count, share_count, conversion_rate, avg_watch_time, new_followers, gift_count, created_at
+		FROM metrics_daily WHERE streamer_id=$1 AND date BETWEEN $2 AND $3 ORDER BY date DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []model.MetricsDaily
+	for rows.Next() {
+		var m model.MetricsDaily
+		if err := rows.Scan(&m.ID, &m.Platform, &m.Date, &m.StreamerID, &m.LiveRoomCount, &m.TotalDuration,
+			&m.GMV, &m.OrderCount, &m.ViewerCount, &m.PeakViewers,
+			&m.LikeCount, &m.CommentCount, &m.ShareCount,
+			&m.ConversionRate, &m.AvgWatchTime, &m.NewFollowers, &m.GiftCount, &m.CreatedAt); err != nil {
+			continue
+		}
+		list = append(list, m)
+	}
+	return list, nil
+}
 
 func (r *MetricsAggRepo) GetDailyMetrics(ctx context.Context, platform, startDate, endDate string) ([]model.MetricsDaily, error) {
 	args := []interface{}{startDate, endDate + " 23:59:59"}
