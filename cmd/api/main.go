@@ -224,7 +224,111 @@ func main() {
 			alerts.GET("/:id/history", alHandler.GetHistory)
 			alerts.POST("/:id/test", alHandler.TestAlert)
 		}
+
+		// ─── Organizations (Admin) ───
+		orgHandler := handler.NewOrganizationHandler()
+		orgs := protected.Group("/organizations")
+		orgs.Use(middleware.AdminRequired())
+		{
+			orgs.POST("", orgHandler.CreateOrg)
+			orgs.GET("", orgHandler.ListOrgs)
+			orgs.GET("/:id", orgHandler.GetOrg)
+			orgs.PUT("/:id", orgHandler.UpdateOrg)
+			orgs.POST("/:id/departments", orgHandler.CreateDept)
+			orgs.GET("/:id/departments/tree", orgHandler.GetDeptTree)
+			orgs.PUT("/:id/departments/:did", orgHandler.UpdateDept)
+			orgs.DELETE("/:id/departments/:did", orgHandler.DeleteDept)
+		}
+
+		// ─── RBAC (Admin) ───
+		rbacHandler := handler.NewRBACHandler()
+		rbac := protected.Group("/rbac")
+		rbac.Use(middleware.AdminRequired())
+		{
+			rbac.GET("/permissions", rbacHandler.ListPermissions)
+			rbac.POST("/roles", rbacHandler.CreateRole)
+			rbac.GET("/roles", rbacHandler.ListRoles)
+			rbac.PUT("/roles/:id", rbacHandler.UpdateRole)
+			rbac.POST("/roles/:id/users/:uid", rbacHandler.AssignRole)
+			rbac.GET("/me/permissions", rbacHandler.GetCurrentUserPermissions)
+		}
+
+		// ─── Audit Logs ───
+		auditHandler := handler.NewAuditHandler()
+		auditLogs := protected.Group("/audit-logs")
+		{
+			auditLogs.GET("", auditHandler.ListAuditLogs)
+			auditLogs.GET("/stats", auditHandler.GetAuditStats)
+		}
+
+		// ─── Data Export ───
+		exportHandler := handler.NewExportHandler()
+		exports := protected.Group("/exports")
+		{
+			exports.POST("", exportHandler.CreateExport)
+			exports.GET("", exportHandler.ListExports)
+			exports.GET("/:id", exportHandler.GetExportStatus)
+			exports.GET("/:id/download", exportHandler.DownloadExport)
+			exports.POST("/:id/cancel", exportHandler.CancelExport)
+		}
+
+		// ─── Advanced Analytics ───
+		advHandler := handler.NewAdvancedAnalyticsHandler()
+		advanced := protected.Group("/advanced-analytics")
+		{
+			advanced.GET("/cohort", advHandler.CohortAnalysis)
+			advanced.GET("/rfm", advHandler.RFMAnalysis)
+			advanced.GET("/forecast", advHandler.SalesForecast)
+			advanced.GET("/anomaly", advHandler.AnomalyDetection)
+			advanced.GET("/user-path", advHandler.UserPathAnalysis)
+			advanced.GET("/engagement-heatmap", advHandler.EngagementHeatmap)
+			advanced.POST("/olap", advHandler.OLAPQuery)
+			advanced.GET("/drill-down", advHandler.DrillDown)
+			advanced.GET("/period-comparison", advHandler.PeriodComparison)
+			advanced.GET("/target-comparison", advHandler.TargetComparison)
+		}
+
+		// ─── Data Quality ───
+		dqHandler := handler.NewDataQualityHandler()
+		quality := protected.Group("/data-quality")
+		quality.Use(middleware.RoleRequired("admin", "analyst"))
+		{
+			quality.POST("/rules", dqHandler.CreateRule)
+			quality.GET("/rules", dqHandler.ListRules)
+			quality.POST("/rules/:id/check", dqHandler.RunCheck)
+			quality.GET("/rules/:id/results", dqHandler.GetResults)
+		}
+
+		// ─── Event Tracking (Public-facing, no auth for SDK) ───
+		evtHandler := handler.NewEventHandler()
+		{
+			v1.POST("/events/track", evtHandler.Track)
+			v1.POST("/events/batch", evtHandler.BatchTrack)
+			protected.GET("/events/funnel", evtHandler.GetFunnelEvents)
+			protected.GET("/events/user-paths", evtHandler.GetUserPaths)
+		}
+
+		// ─── Aggregated Metrics ───
+		metricsHandler := handler.NewMetricsAggHandler()
+		metricsAgg := protected.Group("/metrics")
+		{
+			metricsAgg.GET("/hourly", metricsHandler.GetHourlyMetrics)
+			metricsAgg.GET("/daily", metricsHandler.GetDailyMetrics)
+			metricsAgg.GET("/streamer/:id/daily", metricsHandler.GetStreamerDaily)
+		}
+
+		// ─── Dashboard Sharing ───
+		shares := protected.Group("/dashboards")
+		{
+			shares.POST("/:id/share", dashHandler.CreateDashboard) // reuse existing
+		}
 	}
+
+	// ─── WebSocket (public endpoint, auth via query param) ───
+	r.GET("/ws", func(c *gin.Context) {
+		// In production: validate token from query param
+		c.JSON(http.StatusOK, gin.H{"message": "WebSocket endpoint - connect via ws://"})
+	})
 
 	// ─── Start Server ───
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
