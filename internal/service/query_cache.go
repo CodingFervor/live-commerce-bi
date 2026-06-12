@@ -23,7 +23,12 @@ func NewQueryCache() *QueryCache {
 	}
 }
 
+// NullSentinel is cached for missing keys to prevent cache penetration
+const nullSentinel = "__NULL__"
+const nullTTL = 30 * time.Second
+
 // Get retrieves cached data, returns nil if not found or expired
+// Implements null caching to prevent cache penetration
 func (qc *QueryCache) Get(ctx context.Context, key string, result interface{}) bool {
 	rdb := cache.Get()
 	if rdb == nil {
@@ -32,6 +37,11 @@ func (qc *QueryCache) Get(ctx context.Context, key string, result interface{}) b
 
 	data, err := cache.GetJSON(ctx, qc.key(key))
 	if err != nil {
+		return false // cache miss
+	}
+
+	// Check for null sentinel (cache penetration protection)
+	if data == nullSentinel {
 		return false
 	}
 
@@ -63,6 +73,15 @@ func (qc *QueryCache) Set(ctx context.Context, key string, data interface{}, ttl
 	}
 }
 
+// SetNull caches a null sentinel for missing data (prevents penetration)
+func (qc *QueryCache) SetNull(ctx context.Context, key string) {
+	rdb := cache.Get()
+	if rdb == nil {
+		return
+	}
+	cache.SetJSON(ctx, qc.key(key), nullSentinel, nullTTL)
+}
+
 // Invalidate removes a cached entry
 func (qc *QueryCache) Invalidate(ctx context.Context, key string) {
 	rdb := cache.Get()
@@ -73,15 +92,26 @@ func (qc *QueryCache) Invalidate(ctx context.Context, key string) {
 }
 
 // InvalidatePattern removes all cached entries matching a prefix
+// Uses SCAN with COUNT to avoid blocking Redis
 func (qc *QueryCache) InvalidatePattern(ctx context.Context, prefix string) {
 	rdb := cache.Get()
 	if rdb == nil {
 		return
 	}
-	// Scan and delete keys matching the pattern
-	iter := rdb.Scan(ctx, 0, qc.key(prefix)+"*", 100).Iterator()
-	for iter.Next(ctx) {
-		rdb.Del(ctx, iter.Val())
+	pattern := qc.key(prefix) + "*"
+	var cursor uint64
+	for {
+		keys, nextCursor, err := rdb.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return
+		}
+		if len(keys) > 0 {
+			rdb.Del(ctx, keys...)
+		}
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
 	}
 }
 

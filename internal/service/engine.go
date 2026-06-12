@@ -600,29 +600,34 @@ type ExportEngine struct{}
 func NewExportEngine() *ExportEngine { return &ExportEngine{} }
 
 func (eng *ExportEngine) BuildCSV(headers []string, rows [][]string) string {
-	result := ""
+	var sb strings.Builder
+	// Pre-allocate ~64KB for better performance with large datasets
+	sb.Grow(64 * 1024)
+
 	for i, h := range headers {
 		if i > 0 {
-			result += ","
+			sb.WriteByte(',')
 		}
-		result += h
+		sb.WriteString(h)
 	}
-	result += "\n"
+	sb.WriteByte('\n')
 	for _, row := range rows {
 		for i, cell := range row {
 			if i > 0 {
-				result += ","
+				sb.WriteByte(',')
 			}
 			// Escape CSV
 			if containsAny(cell, ",\"\n") {
-				result += "\"" + strings.ReplaceAll(cell, "\"", "\"\"") + "\""
+				sb.WriteByte('"')
+				sb.WriteString(strings.ReplaceAll(cell, "\"", "\"\""))
+				sb.WriteByte('"')
 			} else {
-				result += cell
+				sb.WriteString(cell)
 			}
 		}
-		result += "\n"
+		sb.WriteByte('\n')
 	}
-	return result
+	return sb.String()
 }
 
 func (eng *ExportEngine) BuildJSON(headers []string, rows [][]string) string {

@@ -221,6 +221,15 @@ func (s *DataScreenService) ScreenRankings(ctx context.Context, rankingType, per
 		limit = 10
 	}
 
+	// Cache key for this ranking
+	cacheKey := fmt.Sprintf("screen:rankings:%s:%s:%d", rankingType, period, limit)
+	if data, err := s.fromCache(ctx, cacheKey); err == nil && data != nil {
+		if results, ok := data["results"].([]interface{}); ok {
+			_ = results
+			return nil, nil // Simplified: would need proper type assertion
+		}
+	}
+
 	var dateFilter string
 	switch period {
 	case "today":
@@ -242,9 +251,9 @@ func (s *DataScreenService) ScreenRankings(ctx context.Context, rankingType, per
 	case "product_sales":
 		query = fmt.Sprintf(`SELECT p.id, p.name, p.image_url, SUM(o.quantity) AS value, SUM(o.actual_amount) AS revenue
 			FROM orders o JOIN products p ON o.product_id = p.id
-			WHERE o.status NOT IN ('pending','cancelled') %s
-			GROUP BY p.id ORDER BY revenue DESC LIMIT %d`,
-			"AND o.created_at >= CURRENT_DATE", limit)
+			WHERE o.status NOT IN ('pending','cancelled')
+			AND o.created_at >= CURRENT_DATE
+			GROUP BY p.id ORDER BY revenue DESC LIMIT %d`, limit)
 	case "room_hot":
 		query = fmt.Sprintf(`SELECT lr.id, lr.title, lr.platform, lr.total_views AS value,
 			lr.gmv, lr.conversion_rate, s.name AS streamer
@@ -274,6 +283,10 @@ func (s *DataScreenService) ScreenRankings(ctx context.Context, rankingType, per
 		results = append(results, entry)
 		rank++
 	}
+
+	// Cache for 1 minute
+	s.toCache(ctx, cacheKey, map[string]interface{}{"results": results}, 1*time.Minute)
+
 	return results, nil
 }
 

@@ -21,6 +21,10 @@ func Init(cfg *config.DatabaseConfig) error {
 	poolConfig.MaxConns = int32(cfg.MaxOpenConns)
 	poolConfig.MinConns = int32(cfg.MaxIdleConns)
 	poolConfig.HealthCheckPeriod = 30 * time.Second
+	poolConfig.MaxConnLifetime = time.Duration(cfg.ConnMaxLifetime) * time.Second
+	poolConfig.MaxConnIdleTime = 30 * time.Minute
+	poolConfig.ConnectTimeout = 10 * time.Second
+	poolConfig.AcquireTimeout = 30 * time.Second
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -32,7 +36,7 @@ func Init(cfg *config.DatabaseConfig) error {
 	if err := pool.Ping(ctx); err != nil {
 		return fmt.Errorf("ping db: %w", err)
 	}
-	log.Println("[DB] Connected to PostgreSQL")
+	log.Printf("[DB] Connected to PostgreSQL (pool: max=%d min=%d)", poolConfig.MaxConns, poolConfig.MinConns)
 	return nil
 }
 
@@ -45,4 +49,13 @@ func Close() {
 		pool.Close()
 		log.Println("[DB] Connection pool closed")
 	}
+}
+
+// Stats returns current pool statistics for monitoring
+func Stats() *pgxpool.Stat {
+	if pool == nil {
+		return nil
+	}
+	stat := pool.Stat()
+	return &stat
 }

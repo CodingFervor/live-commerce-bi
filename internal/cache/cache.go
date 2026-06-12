@@ -14,22 +14,30 @@ import (
 var client *redis.Client
 
 func Init(cfg *config.RedisConfig) error {
+	poolSize := cfg.PoolSize
+	if poolSize == 0 {
+		poolSize = 20
+	}
 	client = redis.NewClient(&redis.Options{
-		Addr:         cfg.Addr(),
-		Password:     cfg.Password,
-		DB:           cfg.DB,
-		MaxRetries:   3,
-		DialTimeout:  5 * time.Second,
-		ReadTimeout:  3 * time.Second,
-		WriteTimeout: 3 * time.Second,
-		PoolSize:     20,
+		Addr:            cfg.Addr(),
+		Password:        cfg.Password,
+		DB:              cfg.DB,
+		MaxRetries:      3,
+		DialTimeout:     5 * time.Second,
+		ReadTimeout:     3 * time.Second,
+		WriteTimeout:    3 * time.Second,
+		PoolSize:        poolSize,
+		MinIdleConns:    5,
+		ConnMaxIdleTime: 5 * time.Minute,
+		ConnMaxLifetime: 30 * time.Minute,
+		PoolTimeout:     4 * time.Second,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
 		return fmt.Errorf("ping redis: %w", err)
 	}
-	log.Println("[Redis] Connected")
+	log.Printf("[Redis] Connected (pool: %d)", poolSize)
 	return nil
 }
 

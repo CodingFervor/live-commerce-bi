@@ -78,15 +78,28 @@ func (h *Hub) Run() {
 
 		case message := <-h.broadcast:
 			h.mu.RLock()
+			// Collect blocked clients first, then clean up under write lock
+			var blocked []*Client
 			for client := range h.clients {
 				select {
 				case client.Send <- message:
 				default:
-					close(client.Send)
-					delete(h.clients, client)
+					blocked = append(blocked, client)
 				}
 			}
 			h.mu.RUnlock()
+
+			// Clean up blocked clients under write lock
+			if len(blocked) > 0 {
+				h.mu.Lock()
+				for _, client := range blocked {
+					if _, ok := h.clients[client]; ok {
+						close(client.Send)
+						delete(h.clients, client)
+					}
+				}
+				h.mu.Unlock()
+			}
 		}
 	}
 }
@@ -97,16 +110,35 @@ func (h *Hub) BroadcastToAll(message []byte) {
 
 func (h *Hub) BroadcastToRoom(roomID string, message []byte) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	// Snapshot clients to avoid holding lock during sends
+	var targets []*Client
 	if room, ok := h.rooms[roomID]; ok {
 		for client := range room {
-			select {
-			case client.Send <- message:
-			default:
+			targets = append(targets, client)
+		}
+	}
+	h.mu.RUnlock()
+
+	// Send to each client; collect blocked ones
+	var blocked []*Client
+	for _, client := range targets {
+		select {
+		case client.Send <- message:
+		default:
+			blocked = append(blocked, client)
+		}
+	}
+
+	// Clean up blocked clients
+	if len(blocked) > 0 {
+		h.mu.Lock()
+		for _, client := range blocked {
+			if _, ok := h.clients[client]; ok {
 				close(client.Send)
 				delete(h.clients, client)
 			}
 		}
+		h.mu.Unlock()
 	}
 }
 

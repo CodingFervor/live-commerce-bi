@@ -528,3 +528,30 @@ ORDER BY date DESC;
 CREATE UNIQUE INDEX idx_mv_daily_gmv_date_platform ON mv_daily_gmv(date, platform);
 
 REFRESH MATERIALIZED VIEW mv_daily_gmv;
+
+-- ─── Performance Indexes ───
+-- Missing indexes identified by performance audit
+
+-- orders.buyer_id: used by cohort analysis, RFM analysis, and buyer lookups
+CREATE INDEX IF NOT EXISTS idx_orders_buyer_id ON orders(buyer_id);
+CREATE INDEX IF NOT EXISTS idx_orders_buyer_status ON orders(buyer_id, status);
+
+-- dashboards.owner_id: used by ListDashboards (per-user query)
+CREATE INDEX IF NOT EXISTS idx_dashboards_owner_id ON dashboards(owner_id);
+
+-- alert_rules composite: common query pattern for alert engine
+CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled ON alert_rules(is_enabled) WHERE is_enabled = true;
+
+-- export_tasks: list by user + status
+CREATE INDEX IF NOT EXISTS idx_export_tasks_user_status ON export_tasks(user_id, status);
+
+-- track_events composite: funnel and path analysis queries
+CREATE INDEX IF NOT EXISTS idx_evt_room_time ON track_events(live_room_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_evt_session ON track_events(session_id);
+
+-- live_rooms composite: analytics dashboard queries by platform + date
+CREATE INDEX IF NOT EXISTS idx_lr_platform_created ON live_rooms(platform, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_lr_status_created ON live_rooms(status, created_at DESC);
+
+-- Covering index for dashboard overview stats
+CREATE INDEX IF NOT EXISTS idx_lr_gmv_date ON live_rooms(created_at DESC, platform, gmv, order_count, total_views, conversion_rate);

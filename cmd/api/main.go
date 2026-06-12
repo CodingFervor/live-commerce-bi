@@ -511,11 +511,18 @@ func healthCheck(hub *service.Hub) gin.HandlerFunc {
 
 func systemMetrics(hub *service.Hub) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
+		metrics := gin.H{
 			"ws_clients":  hub.ClientCount(),
 			"ws_rooms":    hub.RoomCount(),
 			"goroutines":  runtime.NumGoroutine(),
-		})
+		}
+		// Add database pool stats
+		if stat := database.Stats(); stat != nil {
+			metrics["db_total_conns"] = stat.TotalConns()
+			metrics["db_idle_conns"] = stat.IdleConns()
+			metrics["db_acquired_conns"] = stat.AcquiredConns()
+		}
+		c.JSON(http.StatusOK, metrics)
 	}
 }
 
