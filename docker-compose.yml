@@ -7,12 +7,18 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - CONFIG_PATH=config/config.yaml
+      - CONFIG_PATH=config/config.json
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
     networks:
       - bi-network
@@ -28,7 +34,8 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./sql/advanced.sql:/docker-entrypoint-initdb.d/02-advanced.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U biuser -d live_commerce_bi"]
       interval: 5s
@@ -37,6 +44,17 @@ services:
     restart: unless-stopped
     networks:
       - bi-network
+    shm_size: 256mb
+    command: >
+      postgres
+        -c max_connections=200
+        -c shared_buffers=256MB
+        -c effective_cache_size=512MB
+        -c work_mem=4MB
+        -c maintenance_work_mem=64MB
+        -c wal_level=replica
+        -c max_wal_size=2GB
+        -c log_min_duration_statement=200
 
   redis:
     image: redis:7-alpine
@@ -53,10 +71,53 @@ services:
     restart: unless-stopped
     networks:
       - bi-network
+    command: >
+      redis-server
+        --maxmemory 512mb
+        --maxmemory-policy allkeys-lru
+        --save 60 1000
+        --appendonly yes
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: bi-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zkdata:/var/lib/zookeeper/data
+    restart: unless-stopped
+    networks:
+      - bi-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: bi-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 72
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    restart: unless-stopped
+    networks:
+      - bi-network
 
 volumes:
   pgdata:
   redisdata:
+  zkdata:
+  kafkadata:
 
 networks:
   bi-network:

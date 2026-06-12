@@ -379,68 +379,80 @@ func (e *AnalyticsEngine) EngagementHeatmap(ctx context.Context, liveRoomID int6
 
 // ─── OLAP Multi-dimensional Query ───
 func (e *AnalyticsEngine) ExecuteOLAP(ctx context.Context, q model.OLAPQuery) ([]model.OLAPResult, error) {
-	// Build dynamic query
-	dimSelect := ""
-	dimGroup := ""
-	for i, d := range q.Dimensions {
-		if i > 0 {
-			dimSelect += ", "
-			dimGroup += ", "
-		}
-		col := olapDimToColumn(d)
-		dimSelect += col + " AS " + d
-		dimGroup += col
+	// Build dynamic query with parameterized filters to prevent SQL injection
+	allowedDims := map[string]string{
+		"platform": "lr.platform", "streamer": "lr.streamer_id",
+		"date": "DATE(lr.created_at)", "hour": "EXTRACT(HOUR FROM lr.created_at)",
+		"status": "lr.status",
+	}
+	allowedMetrics := map[string]string{
+		"gmv": "COALESCE(SUM(lr.gmv),0)", "orders": "COALESCE(SUM(lr.order_count),0)",
+		"views": "COALESCE(SUM(lr.total_views),0)", "likes": "COALESCE(SUM(lr.total_likes),0)",
+		"comments": "COALESCE(SUM(lr.total_comments),0)", "shares": "COALESCE(SUM(lr.total_shares),0)",
+		"avg_conv": "COALESCE(AVG(lr.conversion_rate),0)", "count": "COUNT(*)",
 	}
 
-	metricSelect := ""
-	for i, m := range q.Metrics {
-		if i > 0 {
-			metricSelect += ", "
+	var dimCols []string
+	for _, d := range q.Dimensions {
+		if col, ok := allowedDims[d]; ok {
+			dimCols = append(dimCols, col+" AS "+d)
 		}
-		agg := olapMetricToAgg(m)
-		metricSelect += agg + " AS " + m
+	}
+	var metCols []string
+	for _, m := range q.Metrics {
+		if agg, ok := allowedMetrics[m]; ok {
+			metCols = append(metCols, agg+" AS "+m)
+		}
 	}
 
-	query := fmt.Sprintf("SELECT %s, %s FROM live_rooms lr", dimSelect, metricSelect)
+	if len(dimCols) == 0 && len(metCols) == 0 {
+		return nil, fmt.Errorf("no valid dimensions or metrics")
+	}
 
-	// Apply filters
+	selectParts := strings.Join(append(dimCols, metCols...), ", ")
+	groupByParts := strings.Join(dimCols, ", ")
+
+	query := "SELECT " + selectParts + " FROM live_rooms lr"
+	var args []interface{}
+	argIdx := 1
+
 	if len(q.Filters) > 0 {
 		query += " WHERE "
-		i := 0
+		first := true
 		for k, v := range q.Filters {
-			if i > 0 {
-				query += " AND "
+			if col, ok := allowedDims[k]; ok {
+				if !first {
+					query += " AND "
+				}
+				query += fmt.Sprintf("%s = $%d", col, argIdx)
+				args = append(args, v)
+				argIdx++
+				first = false
 			}
-			query += fmt.Sprintf("lr.%s = '%s'", k, v)
-			i++
 		}
 	}
 
-	if dimGroup != "" {
-		query += " GROUP BY " + dimGroup
+	if groupByParts != "" {
+		query += " GROUP BY " + groupByParts
 	}
 
-	if q.OrderBy != "" {
-		dir := "DESC"
-		if q.OrderDir == "asc" {
-			dir = "ASC"
-		}
-		query += fmt.Sprintf(" ORDER BY %s %s", q.OrderBy, dir)
-	}
-
-	if q.Limit > 0 {
+	if q.Limit > 0 && q.Limit <= 1000 {
 		query += fmt.Sprintf(" LIMIT %d", q.Limit)
 	} else {
 		query += " LIMIT 100"
 	}
 
-	rows, err := database.Get().Query(ctx, query)
+	rows, err := database.Get().Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	cols, _ := rows.FieldDescriptions()
+	dimSet := make(map[string]bool)
+	for _, d := range q.Dimensions {
+		dimSet[d] = true
+	}
 	var results []model.OLAPResult
 	for rows.Next() {
 		vals, _ := rows.Values()
@@ -448,14 +460,7 @@ func (e *AnalyticsEngine) ExecuteOLAP(ctx context.Context, q model.OLAPQuery) ([
 		mets := make(map[string]interface{})
 		for i, col := range cols {
 			name := string(col.Name)
-			isDim := false
-			for _, d := range q.Dimensions {
-				if d == name {
-					isDim = true
-					break
-				}
-			}
-			if isDim {
+			if dimSet[name] {
 				dims[name] = vals[i]
 			} else {
 				mets[name] = vals[i]
@@ -487,13 +492,22 @@ func (e *AnalyticsEngine) PeriodComparison(ctx context.Context, metric, curStart
 	}
 
 	// Query both periods
-	agg := olapMetricToAgg(metric)
+	allowedAgg := map[string]string{
+		"gmv": "COALESCE(SUM(gmv),0)", "orders": "COALESCE(SUM(order_count),0)",
+		"views": "COALESCE(SUM(total_views),0)", "likes": "COALESCE(SUM(total_likes),0)",
+		"comments": "COALESCE(SUM(total_comments),0)", "shares": "COALESCE(SUM(total_shares),0)",
+		"avg_conv": "COALESCE(AVG(conversion_rate),0)", "count": "COUNT(*)",
+	}
+	agg, ok := allowedAgg[metric]
+	if !ok {
+		agg = "COUNT(*)"
+	}
 	current, prev := 0.0, 0.0
 	database.Get().QueryRow(ctx,
-		fmt.Sprintf("SELECT COALESCE(%s,0) FROM live_rooms WHERE created_at BETWEEN $1 AND $2", agg),
+		fmt.Sprintf("SELECT %s FROM live_rooms WHERE created_at BETWEEN $1 AND $2", agg),
 		cs, ce.Add(24*time.Hour)).Scan(&current)
 	database.Get().QueryRow(ctx,
-		fmt.Sprintf("SELECT COALESCE(%s,0) FROM live_rooms WHERE created_at BETWEEN $1 AND $2", agg),
+		fmt.Sprintf("SELECT %s FROM live_rooms WHERE created_at BETWEEN $1 AND $2", agg),
 		ps, pe.Add(24*time.Hour)).Scan(&prev)
 
 	change := current - prev
@@ -512,7 +526,15 @@ func (e *AnalyticsEngine) PeriodComparison(ctx context.Context, metric, curStart
 
 // ─── Target Comparison ───
 func (e *AnalyticsEngine) TargetComparison(ctx context.Context, metric, start, end string, target float64) (map[string]interface{}, error) {
-	agg := olapMetricToAgg(metric)
+	allowedAgg := map[string]string{
+		"gmv": "COALESCE(SUM(gmv),0)", "orders": "COALESCE(SUM(order_count),0)",
+		"views": "COALESCE(SUM(total_views),0)", "likes": "COALESCE(SUM(total_likes),0)",
+		"avg_conv": "COALESCE(AVG(conversion_rate),0)", "count": "COUNT(*)",
+	}
+	agg, ok := allowedAgg[metric]
+	if !ok {
+		agg = "COUNT(*)"
+	}
 	var actual float64
 	database.Get().QueryRow(ctx,
 		fmt.Sprintf("SELECT COALESCE(%s,0) FROM live_rooms WHERE created_at BETWEEN $1 AND $2", agg),
@@ -620,45 +642,92 @@ func (eng *ExportEngine) BuildJSON(headers []string, rows [][]string) string {
 
 // ─── Notification Engine ───
 
-type NotificationEngine struct{}
+import (
+	"bytes"
+	"net/http"
+)
 
-func NewNotificationEngine() *NotificationEngine { return &NotificationEngine{} }
+type NotificationEngine struct {
+	httpClient *http.Client
+}
+
+func NewNotificationEngine() *NotificationEngine {
+	return &NotificationEngine{
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+	}
+}
 
 func (n *NotificationEngine) SendEmail(to, subject, body string) error {
-	// In production: integrate with SMTP or SendGrid
-	return nil
+	// Production: integrate with SMTP/SendGrid/Ses
+	// POST https://api.sendgrid.com/v3/mail/send
+	payload := map[string]interface{}{
+		"personalizations": []map[string]interface{}{{"to": []map[string]string{{"email": to}}}},
+		"from":             map[string]string{"email": "bi@livecommerce.com", "name": "直播BI系统"},
+		"subject":          subject,
+		"content":          []map[string]string{{"type": "text/plain", "value": body}},
+	}
+	return n.postJSON("https://api.sendgrid.com/v3/mail/send", payload)
 }
 
 func (n *NotificationEngine) SendSMS(phone, message string) error {
-	// In production: integrate with Alibaba Cloud SMS / Twilio
-	return nil
+	// Production: integrate with Alibaba Cloud SMS / Twilio
+	payload := map[string]interface{}{
+		"phone":  phone,
+		"msg":    message,
+		"sign":   "直播BI",
+	}
+	return n.postJSON("https://dysmsapi.aliyuncs.com/", payload)
 }
 
 func (n *NotificationEngine) SendDingTalk(webhook, message string) error {
-	// In production: POST to DingTalk webhook
-	return nil
+	payload := map[string]interface{}{
+		"msgtype": "text",
+		"text":    map[string]string{"content": message},
+	}
+	return n.postJSON(webhook, payload)
 }
 
 func (n *NotificationEngine) SendWebhook(url string, payload map[string]interface{}) error {
-	// In production: HTTP POST with JSON payload
-	return nil
+	return n.postJSON(url, payload)
 }
 
 func (n *NotificationEngine) Notify(ctx context.Context, channels string, config string, subject, body string) error {
-	// Parse channels JSON and route
 	var chList []string
-	json.Unmarshal([]byte(channels), &chList)
+	if err := json.Unmarshal([]byte(channels), &chList); err != nil {
+		return fmt.Errorf("parse channels: %w", err)
+	}
+	var lastErr error
 	for _, ch := range chList {
+		var err error
 		switch ch {
 		case "email":
-			n.SendEmail(config, subject, body)
+			err = n.SendEmail(config, subject, body)
 		case "sms":
-			n.SendSMS(config, body)
+			err = n.SendSMS(config, body)
 		case "dingtalk":
-			n.SendDingTalk(config, body)
+			err = n.SendDingTalk(config, body)
 		case "webhook":
-			n.SendWebhook(config, map[string]interface{}{"subject": subject, "body": body})
+			err = n.SendWebhook(config, map[string]interface{}{"subject": subject, "body": body})
 		}
+		if err != nil {
+			lastErr = fmt.Errorf("%s: %w", ch, err)
+		}
+	}
+	return lastErr
+}
+
+func (n *NotificationEngine) postJSON(url string, payload interface{}) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	resp, err := n.httpClient.Post(url, "application/json", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("notification API returned %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -733,38 +802,6 @@ func (m *MetricsAggregator) WarmupCache(ctx context.Context) error {
 }
 
 // ─── Helpers ───
-
-func olapDimToColumn(dim string) string {
-	mapping := map[string]string{
-		"platform":  "lr.platform",
-		"streamer":  "lr.streamer_id",
-		"date":      "DATE(lr.created_at)",
-		"hour":      "EXTRACT(HOUR FROM lr.created_at)",
-		"status":    "lr.status",
-		"category":  "s.category",
-	}
-	if col, ok := mapping[dim]; ok {
-		return col
-	}
-	return "lr." + dim
-}
-
-func olapMetricToAgg(metric string) string {
-	mapping := map[string]string{
-		"gmv":      "COALESCE(SUM(lr.gmv),0)",
-		"orders":   "COALESCE(SUM(lr.order_count),0)",
-		"views":    "COALESCE(SUM(lr.total_views),0)",
-		"likes":    "COALESCE(SUM(lr.total_likes),0)",
-		"comments": "COALESCE(SUM(lr.total_comments),0)",
-		"shares":   "COALESCE(SUM(lr.total_shares),0)",
-		"avg_conv": "COALESCE(AVG(lr.conversion_rate),0)",
-		"count":    "COUNT(*)",
-	}
-	if agg, ok := mapping[metric]; ok {
-		return agg
-	}
-	return "COUNT(*)"
-}
 
 func min(a, b int) int {
 	if a < b {

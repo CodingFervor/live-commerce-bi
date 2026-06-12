@@ -17,6 +17,7 @@ import (
 	"github.com/CodingFervor/live-commerce-bi/internal/database"
 	"github.com/CodingFervor/live-commerce-bi/internal/handler"
 	"github.com/CodingFervor/live-commerce-bi/internal/middleware"
+	"github.com/CodingFervor/live-commerce-bi/internal/service"
 	"github.com/CodingFervor/live-commerce-bi/pkg/jwt"
 	"github.com/CodingFervor/live-commerce-bi/pkg/logger"
 )
@@ -56,6 +57,29 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	// Start WebSocket Hub
+	hub := service.NewHub()
+	go hub.Run()
+	logger.Info("WebSocket Hub started")
+
+	// Start Redis subscriber for real-time push
+	go service.RedisSubscriber(context.Background())
+
+	// Start metrics aggregation scheduler
+	go func() {
+		agg := service.NewMetricsAggregator()
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			now := time.Now()
+			_ = agg.AggregateHourly(ctx, "", now.Add(-time.Hour))
+			_ = agg.AggregateDaily(ctx, "", now.Add(-24*time.Hour))
+			_ = agg.WarmupCache(ctx)
+			cancel()
+		}
+	}()
+
 	// Create router
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -63,12 +87,44 @@ func main() {
 	r.Use(middleware.CORS())
 	r.Use(middleware.RateLimit(200, time.Minute))
 
-	// Health check
+	// Health check with dependency status
 	r.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status":    "ok",
+		status := "ok"
+		dbStatus := "up"
+		redisStatus := "up"
+
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		defer cancel()
+
+		if err := database.Get().Ping(ctx); err != nil {
+			dbStatus = "down"
+			status = "degraded"
+		}
+		if err := cache.Get().Ping(ctx).Err(); err != nil {
+			redisStatus = "down"
+			status = "degraded"
+		}
+
+		code := http.StatusOK
+		if status == "degraded" {
+			code = http.StatusServiceUnavailable
+		}
+		c.JSON(code, gin.H{
+			"status":    status,
 			"service":   "live-commerce-bi",
+			"version":   "2.0.0",
+			"db":        dbStatus,
+			"redis":     redisStatus,
+			"ws_clients": hub.ClientCount(),
 			"timestamp": time.Now().Unix(),
+		})
+	})
+
+	r.GET("/metrics", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"ws_clients":  hub.ClientCount(),
+			"ws_rooms":    hub.RoomCount(),
+			"goroutines":  "N/A",
 		})
 	})
 
@@ -86,6 +142,7 @@ func main() {
 	// ─── Protected routes ───
 	protected := v1.Group("")
 	protected.Use(middleware.AuthRequired())
+	protected.Use(middleware.AuditLogger())
 	{
 		// Auth profile
 		protected.GET("/auth/profile", authHandler.GetProfile)
